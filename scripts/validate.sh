@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+cd -- "$repository_root"
+
+required_tofu_version="1.12.5"
+installed_tofu_version="$(tofu version | awk 'NR == 1 { sub(/^OpenTofu v/, ""); print }')"
+
+if [[ "$installed_tofu_version" != "$required_tofu_version" ]]; then
+  printf 'OpenTofu %s is required; found %s.\n' \
+    "$required_tofu_version" "$installed_tofu_version" >&2
+  exit 1
+fi
+
+printf 'Checking OpenTofu formatting...\n'
+tofu fmt -check -recursive
+
+roots=(
+  "infra/bootstrap/state"
+  "infra/bootstrap/account"
+  "infra/live/production/core"
+)
+
+for root in "${roots[@]}"; do
+  printf 'Initializing %s with its backend disabled...\n' "$root"
+  (
+    cd -- "$root"
+    tofu init \
+      -backend=false \
+      -input=false \
+      -lockfile=readonly \
+      -no-color
+  )
+
+  printf 'Validating %s...\n' "$root"
+  (
+    cd -- "$root"
+    tofu validate
+  )
+done
+
+printf 'Checking shell syntax...\n'
+mapfile -t shell_scripts < <(
+  git ls-files --cached --others --exclude-standard -- '*.sh'
+)
+
+if ((${#shell_scripts[@]} == 0)); then
+  printf 'No repository shell scripts were found.\n' >&2
+  exit 1
+fi
+
+bash -n "${shell_scripts[@]}"
+bash -n infra/modules/host/user_data.sh.tftpl
+
+printf 'Checking repository policy...\n'
+./scripts/check-policy.sh
+
+printf 'Validation completed successfully.\n'

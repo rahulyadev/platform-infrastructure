@@ -1,0 +1,33 @@
+# OpenTofu working data and local state
+.terraform/
+.state/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.plan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.auto.tfvars
+*.local.tfvars
+terraform.tfvars
+terraform.tfvars.json
+backend.hcl
+
+# Local environment and credential material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# Editor and operating-system files
+.DS_Store
+*.swp
+*~

@@ -1,0 +1,7 @@
+bucket = "replace-with-created-state-bucket"
+key    = "bootstrap/state/tofu.tfstate"
+region = "replace-with-aws-region"
+
+allowed_account_ids = ["000000000000"]
+encrypt             = true
+use_lockfile        = true
