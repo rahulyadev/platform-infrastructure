@@ -1,0 +1,24 @@
+output "vpc_id" {
+  description = "Custom VPC ID."
+  value       = aws_vpc.this.id
+}
+
+output "public_subnet_id" {
+  description = "Public subnet ID."
+  value       = aws_subnet.public.id
+}
+
+output "edge_security_group_id" {
+  description = "Edge security group ID."
+  value       = aws_security_group.edge.id
+}
+
+output "route_table_id" {
+  description = "Public route table ID."
+  value       = aws_route_table.public.id
+}
+
+output "internet_gateway_id" {
+  description = "Internet Gateway ID."
+  value       = aws_internet_gateway.this.id
+}

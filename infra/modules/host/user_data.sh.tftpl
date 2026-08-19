@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+umask 027
+
+install -d -o root -g root -m 0750 \
+  /srv/platform/portfolio/releases \
+  /srv/platform/portfolio/deployment-state \
+  /var/lib/platform
+
+if systemctl list-unit-files amazon-ssm-agent.service >/dev/null 2>&1; then
+  systemctl enable --now amazon-ssm-agent.service
+fi
+
+if systemctl list-unit-files sshd.service >/dev/null 2>&1; then
+  systemctl disable --now sshd.service
+fi
