@@ -9,9 +9,20 @@ common AWS access-key prefixes, credential-like assignments, private-key
 headers, and unsafe file types.
 
 It also requires exactly one blocking `allowed_account_ids` setting in each root
-AWS provider, rejects warning-only `check "expected_account"` blocks, requires
-an account allowlist placeholder in every `backend.hcl.example`, and rejects
-tracked `terraform.tfvars` or `terraform.tfvars.json` runtime files.
+AWS provider and rejects warning-only `check "expected_account"` blocks. Every
+active root must contain exactly one S3 backend with encryption and native lock
+files enabled; active local backends and the obsolete bootstrap S3 examples are
+rejected. Every `backend.hcl.example` must contain its exact state key, account
+allowlist placeholder, encryption setting, and native-lock setting.
+
+Validation policy requires one mode-`0700` temporary root outside the repository
+and a distinct external `TF_DATA_DIR` for each OpenTofu root. Both initialization
+and validation must use that root-specific directory, and an EXIT trap must
+remove the temporary validation tree. References to deleted backend examples or
+guidance that suggests adding another active backend block are rejected.
+
+Tracked `terraform.tfvars` or `terraform.tfvars.json` runtime files remain
+forbidden.
 
 Canonical `h1:` and `zh:` provider-checksum lines are excluded from the generic
 twelve-digit scan because random checksum text is not an AWS account ID. Other

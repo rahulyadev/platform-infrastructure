@@ -1,8 +1,12 @@
 # Remote-state bucket bootstrap
 
-This root defines the private S3 bucket that can later store OpenTofu state. It
-uses ignored local state as a one-time bootstrap exception because the bucket
-does not yet exist.
+This root defines the private S3 bucket used for OpenTofu remote state. The
+bucket has been created and verified, but remains empty until the protected
+local bootstrap states are migrated.
+
+The root now declares one partial S3 backend with encryption and native S3 lock
+files. Its existing protected local state and ignored local-backend metadata
+remain unchanged so the next operation can perform the one-time migration.
 
 The derived bucket name has this form:
 
@@ -14,17 +18,22 @@ It configures encryption, versioning, bucket-owner-enforced ownership, public
 access blocking, a TLS-only policy, protected destruction, multipart cleanup,
 and 365-day noncurrent-version retention by default.
 
-Initialization and validation do not create the bucket. Creation requires a
-separate saved-plan, cost-review, and apply workflow. The AWS provider rejects
-accounts other than `expected_account_id`; the caller-identity preflight in the
-runbook remains mandatory.
+Repository validation uses a temporary external `TF_DATA_DIR` and disables the
+backend, so it neither reads nor changes authoritative backend metadata. The
+AWS provider rejects accounts other than `expected_account_id`; the
+caller-identity preflight in the runbook remains mandatory.
 
-After creation, migrate state only in a separately reviewed source change. A
-root may have only one active backend block: replace the local backend block in
-`backend.tf` with the S3 block from `backend.s3.tf.example`; do not add a second
-backend block. Create ignored `backend.hcl` from `backend.hcl.example`, then
-replace its bucket, region, and `allowed_account_ids` placeholders with the
-reviewed values. Back up the local state and record its SHA-256 before running:
+The creation and apply workflow remains useful if the bucket must ever be
+recovered or rebuilt, but requires a separate saved plan, current cost review,
+and exact apply authorization.
+
+Migrate this root before the account root. A root may have only one active
+backend block; the partial S3 block in `backend.tf` is already the sole active
+backend. Use the existing protected local state and local-backend metadata, and
+prepare ignored `backend.hcl` from `backend.hcl.example`. Verify its bucket,
+region, `allowed_account_ids`, and exact key
+`bootstrap/state/tofu.tfstate`. Reverify the protected backup and local-state
+SHA-256 before running:
 
 ```bash
 tofu init \
@@ -36,7 +45,7 @@ tofu init \
 
 Do not combine `-migrate-state` with `-reconfigure`, which would disregard
 migration of the existing state. Confirm the remote state object and native S3
-lock-file behavior before retiring reliance on the local copy. No DynamoDB lock
-table is required.
+lock-file behavior, state equality, versioning, and a no-change plan before
+retiring reliance on the local copy. No DynamoDB lock table is required.
 
 See [the state bootstrap runbook](../../../runbooks/state-bootstrap.md).

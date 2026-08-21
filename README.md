@@ -7,9 +7,15 @@ or design-system code.
 
 ## Deployment status
 
-No AWS infrastructure defined here has been provisioned. The OpenTofu code is a
-local, reviewable foundation and must not be interpreted as evidence that any
-bucket, budget, network, host, certificate, or deployment exists.
+The protected remote-state bucket and the monthly USD 40 budget with five
+notifications have been created and verified. Their OpenTofu states remain in
+protected local files until the separately reviewed one-time migration; the
+state bucket is empty until that migration completes.
+
+Production core has not been planned or provisioned. No EC2 instance, VPC,
+Elastic IP, artifact or backup bucket, Nginx or TLS configuration, DNS cutover,
+monitoring, snapshot policy, GitHub OIDC integration, or portfolio deployment
+exists yet.
 
 ## Architecture
 
@@ -37,9 +43,10 @@ resource names do not embed an environment's domain.
 
 ## Repository layout
 
-- `infra/bootstrap/state`: one-time local-backend root for the future remote
-  state bucket.
-- `infra/bootstrap/account`: local-backend root for account cost notifications.
+- `infra/bootstrap/state`: partial-S3-backend root for the verified remote-state
+  bucket; its protected local state awaits migration.
+- `infra/bootstrap/account`: partial-S3-backend root for the verified monthly
+  cost budget; its protected local state awaits migration.
 - `infra/live/production/core`: partial-S3-backend production network, buckets,
   and host root.
 - `infra/modules`: reusable bucket, budget, network, and host modules.
@@ -71,9 +78,12 @@ policy rules. It does not run an OpenTofu plan or call AWS intentionally.
 ## OpenTofu roots
 
 Each root has independent provider dependency locks and backend documentation.
-The two bootstrap roots start with ignored local state. The production root has
-a partial S3 backend whose concrete bucket configuration is supplied only in a
-reviewed workflow after the state bucket exists.
+All three roots declare one partial S3 backend with encryption and native lock
+files. Concrete bucket, key, region, and account configuration stays in ignored
+`backend.hcl` files. The state and account roots retain protected local state
+and local backend metadata for a one-time migration, performed state first and
+account second; production core must not be initialized before both migrations
+are proven.
 
 ## Safety model
 

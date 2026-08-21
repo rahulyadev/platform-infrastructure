@@ -7,12 +7,12 @@ an encrypted gp3 root volume, and one Elastic IP.
 
 The backend is partial S3 configuration with encryption and native S3 lock
 files. Its required key is `production/core/tofu.tfstate`. This root already has
-its sole active S3 backend block; do not add another backend block. The remote
-state bucket must exist before this root is initialized with ignored
-`backend.hcl` created from `backend.hcl.example`. Replace the bucket, region,
-and `allowed_account_ids` placeholders before initialization. The AWS provider
-also rejects accounts other than `expected_account_id`; the caller-identity
-preflight remains mandatory.
+its sole active S3 backend block; do not add another backend block. The verified
+remote-state bucket exists, but the bootstrap states must be migrated and
+proven before this root is initialized. Its ignored `backend.hcl` is created
+from `backend.hcl.example` with reviewed bucket, region, account allowlist, and
+state key. The AWS provider also rejects accounts other than
+`expected_account_id`; the caller-identity preflight remains mandatory.
 
 If an existing local-backed root is migrated to this S3 layout, make a
 separately reviewed source change that replaces its local block in `backend.tf`
@@ -39,10 +39,12 @@ Initialization and validation do not resolve the value; a future plan will.
 resource names remain domain-neutral. The committed production values do not
 include an account ID or credentials.
 
-No resource in this root has been created. Before production go-live, separate
-work must complete state-bucket creation and migration, budget creation, saved
-plan and cost review, monitoring and alarms, an EBS snapshot policy, Nginx and
-TLS, artifact build and deployment, GitHub OIDC, DNS cutover, rollback and
-restore proof, Cognito, and identity-service onboarding. Databases, Redis,
+No resource in this root has been planned or created. Before production go-live,
+separate work must complete bootstrap-state migration, saved plan and cost
+review, monitoring and alarms, an EBS snapshot policy, Nginx and TLS, artifact
+build and deployment, GitHub OIDC, DNS cutover, rollback and restore proof,
+Cognito, and identity-service onboarding. No EC2 instance, VPC, Elastic IP,
+artifact or backup bucket, Nginx, TLS, DNS cutover, monitoring, snapshot policy,
+GitHub OIDC integration, or portfolio deployment exists yet. Databases, Redis,
 RabbitMQ, Route 53 authoritative DNS, load balancers, and orchestrators are not
 part of this root.

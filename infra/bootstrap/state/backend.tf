@@ -1,5 +1,6 @@
 terraform {
-  backend "local" {
-    path = ".state/bootstrap-state.tfstate"
+  backend "s3" {
+    encrypt      = true
+    use_lockfile = true
   }
 }
