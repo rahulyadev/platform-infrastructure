@@ -23,11 +23,29 @@ roots=(
   "infra/live/production/core"
 )
 
+validation_root="$(mktemp -d)"
+chmod 0700 "$validation_root"
+
+cleanup_validation_root() {
+  rm -rf -- "$validation_root"
+}
+trap cleanup_validation_root EXIT
+
+case "$validation_root/" in
+  "$repository_root/"*)
+    printf 'Temporary validation data must be outside the repository.\n' >&2
+    exit 1
+    ;;
+esac
+
 for root in "${roots[@]}"; do
+  data_dir="$validation_root/${root//\//-}"
+  mkdir -m 0700 -- "$data_dir"
+
   printf 'Initializing %s with its backend disabled...\n' "$root"
   (
     cd -- "$root"
-    tofu init \
+    TF_DATA_DIR="$data_dir" tofu init \
       -backend=false \
       -input=false \
       -lockfile=readonly \
@@ -37,7 +55,7 @@ for root in "${roots[@]}"; do
   printf 'Validating %s...\n' "$root"
   (
     cd -- "$root"
-    tofu validate
+    TF_DATA_DIR="$data_dir" tofu validate -no-color
   )
 done
 

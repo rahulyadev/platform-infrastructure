@@ -6,9 +6,9 @@
 - Critical: USD 35 per month.
 - Hard review boundary: USD 40 per month.
 
-The account bootstrap root defines notifications at these thresholds, but no
-budget exists until a reviewed apply creates it. Forecast notifications apply
-at USD 35 and USD 40.
+The verified monthly USD 40 budget has actual notifications at USD 25, USD 35,
+and USD 40, plus forecast notifications at USD 35 and USD 40. It has no budget
+actions and does not enforce automatic shutdown.
 
 ## Price review
 

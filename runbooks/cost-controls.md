@@ -2,10 +2,11 @@
 
 ## Notification model
 
-The planned monthly cost budget has actual-spend notifications at USD 25, USD
-35, and USD 40, plus forecast notifications at USD 35 and USD 40. These are
-notifications, not automatic shutdown actions. No budget exists until the
-account bootstrap root is reviewed and applied.
+The verified monthly USD 40 cost budget has actual-spend notifications at USD
+25, USD 35, and USD 40, plus forecast notifications at USD 35 and USD 40. These
+are notifications, not automatic shutdown actions. It has no budget actions or
+Budget Reports; notification delivery remains subject to AWS billing-data
+refresh and threshold evaluation.
 
 ## Before an apply
 

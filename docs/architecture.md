@@ -2,8 +2,15 @@
 
 ## Current status
 
-The architecture in this document is planned. No infrastructure described here
-has been provisioned or production-verified.
+Only the protected remote-state bucket and the monthly USD 40 budget with five
+notifications have been provisioned and verified. The bucket is empty while the
+state and account bootstrap roots retain protected local state awaiting
+one-time migration.
+
+The production architecture in this document remains planned and has not been
+provisioned or production-verified. No EC2 instance, VPC, Elastic IP, artifact
+or backup bucket, Nginx, TLS, DNS cutover, monitoring, snapshot policy, GitHub
+OIDC integration, or portfolio deployment exists yet.
 
 ## Production foundation
 
