@@ -14,6 +14,10 @@ grep -Fq 'expression  = "100 * inode_used / inode_total"' infra/modules/monitori
 ! grep -R -F 'disk_inodes_used_percent' config/cloudwatch infra/modules/monitoring
 [[ "$(grep -R -E 'resource[[:space:]]+"aws_ssm_association"' infra/modules/monitoring infra/modules/deployment | wc -l)" == "3" ]]
 [[ "$(grep -F 'cron_expression' infra/modules/snapshot_policy/main.tf | wc -l)" == "2" ]]
+[[ "$(grep -Ec '^[[:space:]]*resource[[:space:]]+"aws_dlm_lifecycle_policy"[[:space:]]+"production"[[:space:]]*\{[[:space:]]*$' infra/modules/snapshot_policy/main.tf)" == "1" ]]
+[[ "$(grep -Fxc '    resource_types = ["INSTANCE"]' infra/modules/snapshot_policy/main.tf)" == "1" ]]
+[[ "$(grep -Ec '^[[:space:]]*exclude_boot_volume[[:space:]]*=[[:space:]]*false[[:space:]]*$' infra/modules/snapshot_policy/main.tf)" == "1" ]]
+! grep -Eq '^[[:space:]]*no_reboot[[:space:]]*=' infra/modules/snapshot_policy/main.tf
 [[ "$(grep -F 'resource "aws_iam_openid_connect_provider" "github"' infra/modules/deployment/github_oidc.tf | wc -l)" == "1" ]]
 ! grep -R -E 'thumbprint_list|github_subject.*[*]' infra/modules/deployment
 

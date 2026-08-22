@@ -555,10 +555,22 @@ if [[ ! -f "$release_manifest" ]] || ! jq -e '
 fi
 
 snapshot_file="infra/modules/snapshot_policy/main.tf"
-if [[ ! -f "$snapshot_file" ]] || \
-  [[ "$(grep -Fxc '    resource_types = ["INSTANCE"]' "$snapshot_file" || true)" != "1" ]] || \
-  [[ "$(grep -Ec 'cron_expression[[:space:]]*=[[:space:]]*"cron\(0 (3 \* \*|4 1 \*) \? \*\)"' "$snapshot_file" || true)" != "2" ]]; then
-  report_files "daily and monthly instance snapshot schedules are incomplete" "$snapshot_file"
+if [[ ! -f "$snapshot_file" ]]; then
+  report_files "snapshot-policy source is missing" "$snapshot_file"
+else
+  if [[ "$(grep -Ec '^[[:space:]]*resource[[:space:]]+"aws_dlm_lifecycle_policy"[[:space:]]+"production"[[:space:]]*\{[[:space:]]*$' "$snapshot_file" || true)" != "1" ]] || \
+    [[ "$(grep -Fxc '    resource_types = ["INSTANCE"]' "$snapshot_file" || true)" != "1" ]]; then
+    report_files "snapshot policy must remain an instance-targeted DLM lifecycle policy" "$snapshot_file"
+  fi
+  if [[ "$(grep -Ec '^[[:space:]]*exclude_boot_volume[[:space:]]*=[[:space:]]*false[[:space:]]*$' "$snapshot_file" || true)" != "1" ]]; then
+    report_files "snapshot policy must include the boot volume exactly once" "$snapshot_file"
+  fi
+  if grep -Eq '^[[:space:]]*no_reboot[[:space:]]*=' "$snapshot_file"; then
+    report_files "EBS snapshot-management policy must not configure the AMI-only no_reboot parameter" "$snapshot_file"
+  fi
+  if [[ "$(grep -Ec 'cron_expression[[:space:]]*=[[:space:]]*"cron\(0 (3 \* \*|4 1 \*) \? \*\)"' "$snapshot_file" || true)" != "2" ]]; then
+    report_files "daily and monthly instance snapshot schedules are incomplete" "$snapshot_file"
+  fi
 fi
 
 monitoring_alarm_file="infra/modules/monitoring/alarms.tf"
