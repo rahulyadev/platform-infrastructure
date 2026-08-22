@@ -48,7 +48,9 @@ jobs:
         run: |
           set -Eeuo pipefail
           artifact_root="$RUNNER_TEMP/portfolio-artifact"
-          bash deploy/build-portfolio.sh --output-dir "$artifact_root"
+          bash deploy/build-portfolio.sh \
+            --install-playwright-browser \
+            --output-dir "$artifact_root"
 
           release_id="website-v1.0.0"
           commit="0bfde1c170e2b27ec92d98504b6fa25d66543bed"
