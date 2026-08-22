@@ -6,6 +6,8 @@ repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 cd -- "$repository_root"
 
 readonly quoted_hashed_asset_location='    location ~* "\.[0-9a-f]{8,}\.(?:css|js|mjs|png|jpe?g|gif|webp|avif|svg|ico|woff2?|ttf|otf)$" {'
+readonly security_headers='config/nginx/security-headers.conf'
+readonly nginx_config='config/nginx/nginx.conf'
 
 location_block() {
   local file="$1"
@@ -55,11 +57,21 @@ for file in config/nginx/portfolio-http.conf.tftpl config/nginx/portfolio-tls.co
   grep -Fq 'no-store' "$file"
 done
 
+[[ "$(grep -Ec '^[[:space:]]*add_header_inherit[[:space:]]+merge;[[:space:]]*$' "$security_headers")" == "1" ]]
+! grep -Eq '^[[:space:]]*add_header_inherit[[:space:]]+off;[[:space:]]*$' "$security_headers"
+[[ "$(grep -Fxc 'add_header X-Content-Type-Options "nosniff" always;' "$security_headers")" == "1" ]]
+[[ "$(grep -Fxc 'add_header Referrer-Policy "strict-origin-when-cross-origin" always;' "$security_headers")" == "1" ]]
+[[ "$(grep -Fxc 'add_header Permissions-Policy "camera=(), geolocation=(), microphone=()" always;' "$security_headers")" == "1" ]]
+[[ "$(grep -Fc 'add_header Content-Security-Policy-Report-Only ' "$security_headers")" == "1" ]]
+
+[[ "$(grep -Fxc '        image/avif avif;' "$nginx_config")" == "1" ]]
+grep -Fq '    include /etc/nginx/mime.types;' "$nginx_config"
+grep -Fq '    default_type application/octet-stream;' "$nginx_config"
+
 grep -Fq 'ssl_protocols TLSv1.2 TLSv1.3' config/nginx/portfolio-tls.conf.tftpl
-grep -Fq 'Strict-Transport-Security "max-age=300"' config/nginx/portfolio-tls.conf.tftpl
+[[ "$(grep -Fxc '    add_header Strict-Transport-Security "max-age=300" always;' config/nginx/portfolio-tls.conf.tftpl)" == "2" ]]
 ! grep -Fq 'includeSubDomains' config/nginx/portfolio-tls.conf.tftpl
-grep -Fq 'Content-Security-Policy-Report-Only' config/nginx/security-headers.conf
-! grep -Eq '\$args|\$cookie_|\$http_authorization|\$request_body|"\$request"' config/nginx/nginx.conf
+! grep -Eq '\$args|\$cookie_|\$http_authorization|\$request_body|"\$request"' "$nginx_config"
 
 readonly runtime_configurator='deploy/ssm/configure-runtime.sh.tftpl'
 nginx_test_line="$(grep -nF 'nginx -t' "$runtime_configurator" | tail -n 1 | cut -d: -f1)"
