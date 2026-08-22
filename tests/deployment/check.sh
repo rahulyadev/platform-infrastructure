@@ -17,6 +17,32 @@ grep -Fq 'runtime configuration refuses to invent a current link for an existing
 grep -Fq 'ord(character) < 32' deploy/ssm/deploy-portfolio.sh
 grep -Fq 'ord(character) < 32' deploy/ssm/rollback-portfolio.sh
 
+tls_script='deploy/ssm/enable-tls.sh.tftpl'
+grep -Fq 'with open("/etc/resolv.conf", encoding="utf-8")' "$tls_script"
+grep -Fq 'https://dns.google/dns-query' "$tls_script"
+grep -Fq 'https://cloudflare-dns.com/dns-query' "$tls_script"
+[[ "$(grep -Fc 'application/dns-message' "$tls_script")" -ge 2 ]]
+grep -Fq 'for record_type in (1, 28):' "$tls_script"
+grep -Fq 'observed_type == 5' "$tls_script"
+grep -Fq 'max_cname_depth = 8' "$tls_script"
+grep -Fq 'maximum_attempts = 6' "$tls_script"
+grep -Fq 'retry_delay_seconds = 10' "$tls_script"
+grep -Fq 'if ipv4 != {expected} or ipv6:' "$tls_script"
+grep -Fq 'if attempt == maximum_attempts:' "$tls_script"
+! grep -Fq 'nameserver_addresses' "$tls_script"
+! grep -Fq 'authoritative_addresses' "$tls_script"
+! grep -Fq 'authoritative_responses' "$tls_script"
+grep -Fq -- '--resolve "$${base_domain}:80:127.0.0.1"' "$tls_script"
+grep -Fq -- '--resolve "www.$${base_domain}:80:127.0.0.1"' "$tls_script"
+staging_line="$(grep -nF '  --staging \' "$tls_script" | cut -d: -f1)"
+production_line="$(grep -nF '"$certbot" certonly \' "$tls_script" | tail -n 1 | cut -d: -f1)"
+tls_install_line="$(grep -nF 'install -o root -g root -m 0644 "$temporary_config" "$nginx_config"' "$tls_script" | cut -d: -f1)"
+renewal_line="$(grep -nF '"$certbot" renew --dry-run' "$tls_script" | cut -d: -f1)"
+[[ -n "$staging_line" && -n "$production_line" && -n "$tls_install_line" && -n "$renewal_line" ]]
+((staging_line < production_line))
+((production_line < tls_install_line))
+((tls_install_line < renewal_line))
+
 build_script='deploy/build-portfolio.sh'
 npm_ci_line="$(grep -nF '  npm ci' "$build_script" | cut -d: -f1)"
 playwright_executable_line="$(grep -nF '    [[ -x node_modules/.bin/playwright ]]' "$build_script" | cut -d: -f1)"

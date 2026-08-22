@@ -55,9 +55,16 @@ import random
 import socket
 import struct
 import sys
+import time
+import urllib.request
 
 zone = sys.argv[1].rstrip(".")
 expected = str(ipaddress.ip_address(sys.argv[2]))
+max_cname_depth = 8
+maximum_attempts = 6
+retry_delay_seconds = 10
+google_doh_endpoint = "https://dns.google/dns-query"
+cloudflare_doh_endpoint = "https://cloudflare-dns.com/dns-query"
 
 def encode_name(name):
     return b"".join(bytes([len(label)]) + label.encode("ascii") for label in name.rstrip(".").split(".")) + b"\0"
@@ -71,60 +78,133 @@ def decode_name(message, offset):
         if offset in seen:
             raise RuntimeError("DNS compression loop")
         seen.add(offset)
+        if offset >= len(message):
+            raise RuntimeError("truncated DNS name")
         length = message[offset]
         if length == 0:
             if not jumped:
                 final_offset = offset + 1
             return ".".join(labels), final_offset
         if length & 0xC0 == 0xC0:
+            if offset + 1 >= len(message):
+                raise RuntimeError("truncated DNS pointer")
             pointer = ((length & 0x3F) << 8) | message[offset + 1]
+            if pointer >= len(message):
+                raise RuntimeError("invalid DNS pointer")
             if not jumped:
                 final_offset = offset + 2
             offset = pointer
             jumped = True
             continue
+        if length & 0xC0 or length > 63 or offset + 1 + length > len(message):
+            raise RuntimeError("invalid DNS label")
         offset += 1
         labels.append(message[offset:offset + length].decode("ascii"))
         offset += length
         if not jumped:
             final_offset = offset
 
-def query(server, name, record_type, recurse):
+def build_query(name, record_type):
     identifier = random.SystemRandom().randrange(0, 65536)
-    flags = 0x0100 if recurse else 0
-    packet = struct.pack("!HHHHHH", identifier, flags, 1, 0, 0, 0) + encode_name(name) + struct.pack("!HH", record_type, 1)
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
-        client.settimeout(4)
-        client.sendto(packet, (server, 53))
-        response, _ = client.recvfrom(65535)
+    packet = struct.pack("!HHHHHH", identifier, 0x0100, 1, 0, 0, 0) + encode_name(name) + struct.pack("!HH", record_type, 1)
+    return identifier, packet
+
+def parse_response(response, identifier):
+    if len(response) < 12:
+        raise RuntimeError("truncated DNS response")
     header = struct.unpack("!HHHHHH", response[:12])
-    if header[0] != identifier or header[1] & 0x000F:
-        raise RuntimeError("DNS query failed")
+    flags = header[1]
+    if header[0] != identifier or not flags & 0x8000:
+        raise RuntimeError("invalid DNS response")
+    if flags & 0x0200:
+        raise RuntimeError("truncated DNS response")
+    if flags & 0x000F:
+        raise RuntimeError("unexpected DNS response code")
     offset = 12
     for _ in range(header[2]):
         _, offset = decode_name(response, offset)
+        if offset + 4 > len(response):
+            raise RuntimeError("truncated DNS question")
         offset += 4
     records = []
     for section, count in (("answer", header[3]), ("authority", header[4]), ("additional", header[5])):
         for _ in range(count):
             owner, offset = decode_name(response, offset)
-            rtype, rclass, _ttl, length = struct.unpack("!HHIH", response[offset:offset + 10])
+            if offset + 10 > len(response):
+                raise RuntimeError("truncated DNS record")
+            record_type, record_class, _ttl, length = struct.unpack("!HHIH", response[offset:offset + 10])
             offset += 10
             data_offset = offset
+            if offset + length > len(response):
+                raise RuntimeError("truncated DNS record data")
             raw = response[offset:offset + length]
             offset += length
-            if rclass != 1:
+            if section != "answer" or record_class != 1:
                 continue
-            if rtype == 1 and length == 4:
-                value = socket.inet_ntoa(raw)
-            elif rtype in (2, 5):
+            if record_type == 1 and length == 4:
+                value = str(ipaddress.ip_address(raw))
+            elif record_type == 28 and length == 16:
+                value = str(ipaddress.ip_address(raw))
+            elif record_type == 5:
                 value, _ = decode_name(response, data_offset)
+                value = value.rstrip(".").lower()
             else:
                 continue
-            records.append((section, owner.rstrip("."), rtype, value.rstrip(".")))
-    return bool(header[1] & 0x0400), records
+            records.append((owner.rstrip(".").lower(), record_type, value))
+    return records
 
-resolver = None
+def query_udp(server, name, record_type):
+    identifier, packet = build_query(name, record_type)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+        client.settimeout(8)
+        client.sendto(packet, (server, 53))
+        response, _ = client.recvfrom(65535)
+    return parse_response(response, identifier)
+
+def query_doh(endpoint, name, record_type):
+    identifier, packet = build_query(name, record_type)
+    request = urllib.request.Request(
+        endpoint,
+        data=packet,
+        method="POST",
+        headers={
+            "Accept": "application/dns-message",
+            "Content-Type": "application/dns-message",
+            "User-Agent": "platform-infrastructure-tls-validation/1.0",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+        if not response.headers.get_content_type() == "application/dns-message":
+            raise RuntimeError("unexpected DoH content type")
+        payload = response.read(65535)
+    return parse_response(payload, identifier)
+
+def resolve_final(query, hostname):
+    current = hostname.rstrip(".").lower()
+    visited = set()
+    for depth in range(max_cname_depth + 1):
+        if current in visited:
+            raise RuntimeError("CNAME cycle")
+        visited.add(current)
+        addresses = {1: set(), 28: set()}
+        aliases = set()
+        for record_type in (1, 28):
+            for owner, observed_type, value in query(current, record_type):
+                if owner != current:
+                    continue
+                if observed_type in addresses:
+                    addresses[observed_type].add(value)
+                elif observed_type == 5:
+                    aliases.add(value)
+        if aliases:
+            if len(aliases) != 1 or depth == max_cname_depth:
+                raise RuntimeError("invalid or over-depth CNAME chain")
+            current = next(iter(aliases))
+            continue
+        return addresses[1], addresses[28]
+    raise RuntimeError("CNAME depth exceeded")
+
+vpc_resolver = None
 with open("/etc/resolv.conf", encoding="utf-8") as handle:
     for line in handle:
         fields = line.split()
@@ -134,53 +214,38 @@ with open("/etc/resolv.conf", encoding="utf-8") as handle:
             except ValueError:
                 continue
             if address.version == 4:
-                resolver = str(address)
+                vpc_resolver = str(address)
                 break
-if resolver is None:
+if vpc_resolver is None:
     raise SystemExit("no IPv4 recursive resolver is configured")
 
-_, ns_records = query(resolver, zone, 2, True)
-nameservers = sorted({value for _, _, rtype, value in ns_records if rtype == 2})
-if not nameservers:
-    raise SystemExit("authoritative nameservers were not discovered")
+perspectives = (
+    ("VPC resolver", lambda name, record_type: query_udp(vpc_resolver, name, record_type)),
+    ("Google DoH", lambda name, record_type: query_doh(google_doh_endpoint, name, record_type)),
+    ("Cloudflare DoH", lambda name, record_type: query_doh(cloudflare_doh_endpoint, name, record_type)),
+)
 
-nameserver_addresses = []
-for nameserver in nameservers:
-    _, records = query(resolver, nameserver, 1, True)
-    nameserver_addresses.extend(value for _, _, rtype, value in records if rtype == 1)
-if not nameserver_addresses:
-    raise SystemExit("authoritative nameserver addresses were not discovered")
-
-def authoritative_addresses(host):
-    addresses = set()
-    aliases = set()
-    authoritative_responses = 0
-    for server in sorted(set(nameserver_addresses)):
-        authoritative, records = query(server, host, 1, False)
-        if not authoritative:
-            continue
-        authoritative_responses += 1
-        for section, owner, rtype, value in records:
-            if section != "answer" or owner != host:
+for attempt in range(1, maximum_attempts + 1):
+    all_valid = True
+    for resolver_name, query in perspectives:
+        for hostname in (zone, "www." + zone):
+            try:
+                ipv4, ipv6 = resolve_final(query, hostname)
+            except Exception:
+                print(f"DNS resolver={resolver_name} host={hostname} A=unavailable AAAA=unavailable")
+                all_valid = False
                 continue
-            if rtype == 1:
-                addresses.add(value)
-            elif rtype == 5:
-                aliases.add(value)
-    if authoritative_responses == 0:
-        raise SystemExit(f"no authoritative response for {host}")
-    for alias in aliases:
-        if alias == zone or alias.endswith("." + zone):
-            addresses.update(authoritative_addresses(alias))
-        else:
-            _, records = query(resolver, alias, 1, True)
-            addresses.update(value for section, _, rtype, value in records if section == "answer" and rtype == 1)
-    return addresses
-
-for hostname in (zone, "www." + zone):
-    observed = authoritative_addresses(hostname)
-    if observed != {expected}:
-        raise SystemExit(f"authoritative DNS for {hostname} does not exclusively resolve to the expected address")
+            observed_ipv4 = ",".join(sorted(ipv4)) if ipv4 else "none"
+            observed_ipv6 = ",".join(sorted(ipv6)) if ipv6 else "none"
+            print(f"DNS resolver={resolver_name} host={hostname} A={observed_ipv4} AAAA={observed_ipv6}")
+            if ipv4 != {expected} or ipv6:
+                all_valid = False
+    if all_valid:
+        print("DNS resolver agreement passed")
+        break
+    if attempt == maximum_attempts:
+        raise SystemExit("recursive DNS perspectives did not converge")
+    time.sleep(retry_delay_seconds)
 PYTHON
 
 install -d -o root -g nginx -m 0750 "$(dirname "$probe_path")"
@@ -188,8 +253,8 @@ printf '%s\n' "$probe_name" >"$probe_path"
 chown root:nginx "$probe_path"
 chmod 0440 "$probe_path"
 
-[[ "$(curl --silent --show-error --fail --max-time 15 "http://$${base_domain}/.well-known/acme-challenge/$${probe_name}")" == "$probe_name" ]]
-[[ "$(curl --silent --show-error --fail --location --max-time 15 "http://www.$${base_domain}/.well-known/acme-challenge/$${probe_name}")" == "$probe_name" ]]
+[[ "$(curl --silent --show-error --fail --max-time 15 --resolve "$${base_domain}:80:127.0.0.1" "http://$${base_domain}/.well-known/acme-challenge/$${probe_name}")" == "$probe_name" ]]
+[[ "$(curl --silent --show-error --fail --max-time 15 --resolve "www.$${base_domain}:80:127.0.0.1" "http://www.$${base_domain}/.well-known/acme-challenge/$${probe_name}")" == "$probe_name" ]]
 
 "$certbot" certonly \
   --staging \
