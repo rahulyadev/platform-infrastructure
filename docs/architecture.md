@@ -20,6 +20,12 @@ custom VPC, one public subnet, one Internet Gateway, and one ARM64 Amazon Linux
 and is administered through AWS Systems Manager. It has no EC2 key pair and no
 public SSH ingress.
 
+The public subnet disables automatic public IPv4 assignment, and the instance
+is launched without requesting an automatically assigned public address. Its
+sole stable public IPv4 address is managed as an Elastic IP with an explicit
+association. This keeps subnet-level address assignment separate from the AWS
+provider's computed public-association state.
+
 Host Nginx will terminate web traffic and serve immutable static portfolio
 releases from versioned directories. Activation will use an atomic symlink so a
 previous release remains available for rollback. Release archives are planned

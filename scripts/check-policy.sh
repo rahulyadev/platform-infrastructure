@@ -56,6 +56,84 @@ if ((${#matches[@]} > 0)); then
   report_files "warning-only expected-account check in active OpenTofu" "${matches[@]}"
 fi
 
+instance_public_ip_assignment_pattern='^[[:space:]]*associate_public_ip_address[[:space:]]*='
+mapfile -t matches < <(grep -El "$instance_public_ip_assignment_pattern" "${tofu_files[@]}" || true)
+if ((${#matches[@]} > 0)); then
+  report_files "instance-level public-IP assignment must remain unset" "${matches[@]}"
+fi
+
+network_module_file="infra/modules/network/main.tf"
+subnet_public_ip_assignment_pattern='^[[:space:]]*map_public_ip_on_launch[[:space:]]*='
+subnet_public_ip_disabled_pattern='^[[:space:]]*map_public_ip_on_launch[[:space:]]*=[[:space:]]*false[[:space:]]*$'
+if [[ ! -f "$network_module_file" ]]; then
+  report_files "required network module file is missing" "$network_module_file"
+else
+  subnet_assignment_count="$(grep -Ec "$subnet_public_ip_assignment_pattern" "$network_module_file" || true)"
+  subnet_disabled_count="$(grep -Ec "$subnet_public_ip_disabled_pattern" "$network_module_file" || true)"
+  if [[ "$subnet_assignment_count" != "1" || "$subnet_disabled_count" != "1" ]]; then
+    report_files "network module must disable automatic public-IP assignment exactly once" "$network_module_file"
+  fi
+fi
+
+host_module_file="infra/modules/host/main.tf"
+eip_resource_pattern='^[[:space:]]*resource[[:space:]]+"aws_eip"[[:space:]]+"this"[[:space:]]*\{[[:space:]]*$'
+eip_association_resource_pattern='^[[:space:]]*resource[[:space:]]+"aws_eip_association"[[:space:]]+"this"[[:space:]]*\{[[:space:]]*$'
+eip_allocation_link_pattern='^[[:space:]]*allocation_id[[:space:]]*=[[:space:]]*aws_eip[.]this[.]id[[:space:]]*$'
+eip_instance_link_pattern='^[[:space:]]*instance_id[[:space:]]*=[[:space:]]*aws_instance[.]this[.]id[[:space:]]*$'
+
+if [[ ! -f "$host_module_file" ]]; then
+  report_files "required host module file is missing" "$host_module_file"
+else
+  if [[ "$(grep -Ec "$eip_resource_pattern" "$host_module_file" || true)" != "1" ]]; then
+    report_files "host module must manage exactly one Elastic IP resource" "$host_module_file"
+  fi
+  if [[ "$(grep -Ec "$eip_association_resource_pattern" "$host_module_file" || true)" != "1" ]]; then
+    report_files "host module must manage exactly one Elastic IP association" "$host_module_file"
+  fi
+  if [[ "$(grep -Ec "$eip_allocation_link_pattern" "$host_module_file" || true)" != "1" ]]; then
+    report_files "Elastic IP association must reference the managed allocation" "$host_module_file"
+  fi
+  if [[ "$(grep -Ec "$eip_instance_link_pattern" "$host_module_file" || true)" != "1" ]]; then
+    report_files "Elastic IP association must reference the managed instance" "$host_module_file"
+  fi
+fi
+
+lifecycle_public_ip_ignore_files=()
+for file in "${tofu_files[@]}"; do
+  if awk '
+    BEGIN { in_ignore_list = 0; found = 0 }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      sub(/[[:space:]]*\/\/.*/, "", line)
+
+      if (line ~ /^[[:space:]]*ignore_changes[[:space:]]*=/) {
+        if (line ~ /associate_public_ip_address/) {
+          found = 1
+        }
+        in_ignore_list = (line ~ /\[/ && line !~ /\]/)
+        next
+      }
+
+      if (in_ignore_list) {
+        if (line ~ /associate_public_ip_address/) {
+          found = 1
+        }
+        if (line ~ /\]/) {
+          in_ignore_list = 0
+        }
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$file"; then
+    lifecycle_public_ip_ignore_files+=("$file")
+  fi
+done
+if ((${#lifecycle_public_ip_ignore_files[@]} > 0)); then
+  report_files "lifecycle ignore rule targets the computed public-IP association attribute" \
+    "${lifecycle_public_ip_ignore_files[@]}"
+fi
+
 active_backend_files=(
   "infra/bootstrap/state/backend.tf"
   "infra/bootstrap/account/backend.tf"
