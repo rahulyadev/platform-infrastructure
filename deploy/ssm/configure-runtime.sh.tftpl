@@ -176,6 +176,12 @@ systemctl daemon-reload
 systemctl enable --now platform-certbot-renew.timer
 
 nginx -t
-systemctl enable --now nginx.service
+systemctl enable nginx.service
+
+if systemctl is-active --quiet nginx.service; then
+  systemctl reload nginx.service
+else
+  systemctl start nginx.service
+fi
 
 printf 'runtime configuration completed at %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
