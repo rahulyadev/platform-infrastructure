@@ -6,9 +6,14 @@ umask 077
 repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 release_manifest="$repository_root/deploy/releases/website-v1.0.0.json"
 output_root=""
+install_playwright_browser=false
 
 while (($# > 0)); do
   case "$1" in
+    --install-playwright-browser)
+      install_playwright_browser=true
+      shift
+      ;;
     --output-dir)
       output_root="${2:-}"
       shift 2
@@ -65,6 +70,10 @@ git -C "$source_root" checkout --detach "$release_commit"
 (
   cd -- "$source_root"
   npm ci
+  if [[ "$install_playwright_browser" == true ]]; then
+    [[ -x node_modules/.bin/playwright ]]
+    node_modules/.bin/playwright install --with-deps chromium
+  fi
   npm run verify
   npm run test:e2e
   npm run build

@@ -17,6 +17,22 @@ grep -Fq 'runtime configuration refuses to invent a current link for an existing
 grep -Fq 'ord(character) < 32' deploy/ssm/deploy-portfolio.sh
 grep -Fq 'ord(character) < 32' deploy/ssm/rollback-portfolio.sh
 
+build_script='deploy/build-portfolio.sh'
+npm_ci_line="$(grep -nF '  npm ci' "$build_script" | cut -d: -f1)"
+playwright_executable_line="$(grep -nF '    [[ -x node_modules/.bin/playwright ]]' "$build_script" | cut -d: -f1)"
+playwright_install_line="$(grep -nF '    node_modules/.bin/playwright install --with-deps chromium' "$build_script" | cut -d: -f1)"
+e2e_line="$(grep -nF '  npm run test:e2e' "$build_script" | cut -d: -f1)"
+grep -Fq 'install_playwright_browser=false' "$build_script"
+grep -Fq -- '--install-playwright-browser)' "$build_script"
+grep -Fq 'install_playwright_browser=true' "$build_script"
+grep -Fq '  if [[ "$install_playwright_browser" == true ]]; then' "$build_script"
+[[ -n "$npm_ci_line" && -n "$playwright_executable_line" && -n "$playwright_install_line" && -n "$e2e_line" ]]
+((npm_ci_line < playwright_executable_line))
+((playwright_executable_line < playwright_install_line))
+((playwright_install_line < e2e_line))
+grep -Fq -- '--install-playwright-browser \' .github/workflows/deploy-portfolio.yml
+! grep -Eq 'test:e2e.*(\|\||true)|--pass-with-no-tests|--grep-invert' "$build_script" .github/workflows/deploy-portfolio.yml
+
 release_definition='deploy/releases/website-v1.0.0.json'
 expected_artifact_sha='bd43b937c621752a94c67c7a1b6495fa837d7ffd43b2bb1a5534a7442a54673d'
 expected_manifest_sha='cc73b3874f514f19557a2f235eb4123199d366cc7c7ed7442b84daa0bc3a0138'
