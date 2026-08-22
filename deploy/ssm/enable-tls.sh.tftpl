@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+umask 077
+
+if ((EUID != 0)); then
+  printf '%s\n' 'TLS enablement must run as root' >&2
+  exit 1
+fi
+
+readonly configured_base_domain='${configured_base_domain}'
+readonly base_domain="$${SSM_BaseDomain:-}"
+readonly acme_email="$${SSM_AcmeEmail:-}"
+readonly expected_elastic_ip="$${SSM_ExpectedElasticIP:-}"
+readonly certbot=/opt/platform/certbot-5.7.0/bin/certbot
+readonly acme_root=/var/lib/platform/acme
+readonly nginx_config=/etc/nginx/conf.d/portfolio.conf
+readonly work_dir="$(mktemp -d /var/lib/platform/tls.XXXXXX)"
+readonly prior_config="$work_dir/portfolio-http.conf"
+readonly probe_name="phase-3a-$RANDOM-$RANDOM"
+readonly probe_path="$acme_root/.well-known/acme-challenge/$probe_name"
+tls_config_installed=0
+
+[[ "$base_domain" == "$configured_base_domain" ]]
+[[ "$base_domain" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]
+[[ "$acme_email" =~ ^[A-Za-z0-9.!#$%\&*+/=?^_\`\{\|\}~-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]
+python3 - "$expected_elastic_ip" <<'PYTHON'
+import ipaddress
+import sys
+value = ipaddress.ip_address(sys.argv[1])
+if value.version != 4:
+    raise SystemExit("expected address is not IPv4")
+PYTHON
+[[ -x "$certbot" ]]
+[[ -f "$nginx_config" ]]
+cp -- "$nginx_config" "$prior_config"
+
+cleanup() {
+  local status=$?
+  rm -f -- "$probe_path"
+  if ((status != 0 && tls_config_installed == 1)); then
+    install -o root -g root -m 0644 "$prior_config" "$nginx_config"
+    if nginx -t; then
+      systemctl reload nginx.service
+    fi
+  fi
+  rm -rf -- "$work_dir"
+  exit "$status"
+}
+trap cleanup EXIT
+
+python3 - "$base_domain" "$expected_elastic_ip" <<'PYTHON'
+import ipaddress
+import random
+import socket
+import struct
+import sys
+
+zone = sys.argv[1].rstrip(".")
+expected = str(ipaddress.ip_address(sys.argv[2]))
+
+def encode_name(name):
+    return b"".join(bytes([len(label)]) + label.encode("ascii") for label in name.rstrip(".").split(".")) + b"\0"
+
+def decode_name(message, offset):
+    labels = []
+    jumped = False
+    final_offset = offset
+    seen = set()
+    while True:
+        if offset in seen:
+            raise RuntimeError("DNS compression loop")
+        seen.add(offset)
+        length = message[offset]
+        if length == 0:
+            if not jumped:
+                final_offset = offset + 1
+            return ".".join(labels), final_offset
+        if length & 0xC0 == 0xC0:
+            pointer = ((length & 0x3F) << 8) | message[offset + 1]
+            if not jumped:
+                final_offset = offset + 2
+            offset = pointer
+            jumped = True
+            continue
+        offset += 1
+        labels.append(message[offset:offset + length].decode("ascii"))
+        offset += length
+        if not jumped:
+            final_offset = offset
+
+def query(server, name, record_type, recurse):
+    identifier = random.SystemRandom().randrange(0, 65536)
+    flags = 0x0100 if recurse else 0
+    packet = struct.pack("!HHHHHH", identifier, flags, 1, 0, 0, 0) + encode_name(name) + struct.pack("!HH", record_type, 1)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+        client.settimeout(4)
+        client.sendto(packet, (server, 53))
+        response, _ = client.recvfrom(65535)
+    header = struct.unpack("!HHHHHH", response[:12])
+    if header[0] != identifier or header[1] & 0x000F:
+        raise RuntimeError("DNS query failed")
+    offset = 12
+    for _ in range(header[2]):
+        _, offset = decode_name(response, offset)
+        offset += 4
+    records = []
+    for section, count in (("answer", header[3]), ("authority", header[4]), ("additional", header[5])):
+        for _ in range(count):
+            owner, offset = decode_name(response, offset)
+            rtype, rclass, _ttl, length = struct.unpack("!HHIH", response[offset:offset + 10])
+            offset += 10
+            data_offset = offset
+            raw = response[offset:offset + length]
+            offset += length
+            if rclass != 1:
+                continue
+            if rtype == 1 and length == 4:
+                value = socket.inet_ntoa(raw)
+            elif rtype in (2, 5):
+                value, _ = decode_name(response, data_offset)
+            else:
+                continue
+            records.append((section, owner.rstrip("."), rtype, value.rstrip(".")))
+    return bool(header[1] & 0x0400), records
+
+resolver = None
+with open("/etc/resolv.conf", encoding="utf-8") as handle:
+    for line in handle:
+        fields = line.split()
+        if len(fields) == 2 and fields[0] == "nameserver":
+            try:
+                address = ipaddress.ip_address(fields[1])
+            except ValueError:
+                continue
+            if address.version == 4:
+                resolver = str(address)
+                break
+if resolver is None:
+    raise SystemExit("no IPv4 recursive resolver is configured")
+
+_, ns_records = query(resolver, zone, 2, True)
+nameservers = sorted({value for _, _, rtype, value in ns_records if rtype == 2})
+if not nameservers:
+    raise SystemExit("authoritative nameservers were not discovered")
+
+nameserver_addresses = []
+for nameserver in nameservers:
+    _, records = query(resolver, nameserver, 1, True)
+    nameserver_addresses.extend(value for _, _, rtype, value in records if rtype == 1)
+if not nameserver_addresses:
+    raise SystemExit("authoritative nameserver addresses were not discovered")
+
+def authoritative_addresses(host):
+    addresses = set()
+    aliases = set()
+    authoritative_responses = 0
+    for server in sorted(set(nameserver_addresses)):
+        authoritative, records = query(server, host, 1, False)
+        if not authoritative:
+            continue
+        authoritative_responses += 1
+        for section, owner, rtype, value in records:
+            if section != "answer" or owner != host:
+                continue
+            if rtype == 1:
+                addresses.add(value)
+            elif rtype == 5:
+                aliases.add(value)
+    if authoritative_responses == 0:
+        raise SystemExit(f"no authoritative response for {host}")
+    for alias in aliases:
+        if alias == zone or alias.endswith("." + zone):
+            addresses.update(authoritative_addresses(alias))
+        else:
+            _, records = query(resolver, alias, 1, True)
+            addresses.update(value for section, _, rtype, value in records if section == "answer" and rtype == 1)
+    return addresses
+
+for hostname in (zone, "www." + zone):
+    observed = authoritative_addresses(hostname)
+    if observed != {expected}:
+        raise SystemExit(f"authoritative DNS for {hostname} does not exclusively resolve to the expected address")
+PYTHON
+
+install -d -o root -g nginx -m 0750 "$(dirname "$probe_path")"
+printf '%s\n' "$probe_name" >"$probe_path"
+chown root:nginx "$probe_path"
+chmod 0440 "$probe_path"
+
+[[ "$(curl --silent --show-error --fail --max-time 15 "http://$${base_domain}/.well-known/acme-challenge/$${probe_name}")" == "$probe_name" ]]
+[[ "$(curl --silent --show-error --fail --location --max-time 15 "http://www.$${base_domain}/.well-known/acme-challenge/$${probe_name}")" == "$probe_name" ]]
+
+"$certbot" certonly \
+  --staging \
+  --non-interactive \
+  --agree-tos \
+  --no-eff-email \
+  --email "$acme_email" \
+  --webroot \
+  --webroot-path "$acme_root" \
+  --domains "$base_domain" \
+  --domains "www.$base_domain" \
+  --config-dir /etc/letsencrypt-staging \
+  --work-dir /var/lib/letsencrypt-staging \
+  --logs-dir /var/log/letsencrypt-staging
+
+"$certbot" certonly \
+  --non-interactive \
+  --agree-tos \
+  --no-eff-email \
+  --email "$acme_email" \
+  --webroot \
+  --webroot-path "$acme_root" \
+  --domains "$base_domain" \
+  --domains "www.$base_domain"
+
+temporary_config="$work_dir/portfolio-tls.conf"
+base64 --decode <<'TLS_CONFIGURATION' >"$temporary_config"
+${tls_conf_b64}
+TLS_CONFIGURATION
+install -o root -g root -m 0644 "$temporary_config" "$nginx_config"
+tls_config_installed=1
+
+nginx -t
+systemctl reload nginx.service
+"$certbot" renew --dry-run
+
+printf 'TLS enabled for the configured apex and www names at %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"

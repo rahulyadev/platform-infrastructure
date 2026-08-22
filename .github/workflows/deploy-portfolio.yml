@@ -1,0 +1,180 @@
+name: Deploy immutable portfolio
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: write
+
+jobs:
+  deploy:
+    name: Build, attest, upload, and deploy
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out platform source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Verify immutable release definition
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          release=deploy/releases/website-v1.0.0.json
+          jq -e '
+            .release.sourceRepository == "https://github.com/rahulyadev/website" and
+            .release.tag == "v1.0.0" and
+            .release.commit == "0bfde1c170e2b27ec92d98504b6fa25d66543bed" and
+            .toolchain.node == "24.19.0" and
+            .toolchain.npm == "11.17.0" and
+            .runtimeEnvironmentVariables == []
+          ' "$release" >/dev/null
+
+      - name: Set up exact Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24.19.0
+
+      - name: Set up exact npm
+        shell: bash
+        run: npm install --global npm@11.17.0
+
+      - name: Build and verify deterministic artifact
+        id: build
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          artifact_root="$RUNNER_TEMP/portfolio-artifact"
+          bash deploy/build-portfolio.sh --output-dir "$artifact_root"
+
+          release_id="website-v1.0.0"
+          commit="0bfde1c170e2b27ec92d98504b6fa25d66543bed"
+          artifact="$artifact_root/${release_id}-${commit}.tar.gz"
+          manifest="$artifact_root/${release_id}-${commit}.manifest.json"
+          artifact_sha="$(sha256sum "$artifact" | awk '{print $1}')"
+          manifest_sha="$(sha256sum "$manifest" | awk '{print $1}')"
+
+          printf 'release_id=%s\n' "$release_id" >>"$GITHUB_OUTPUT"
+          printf 'artifact=%s\n' "$artifact" >>"$GITHUB_OUTPUT"
+          printf 'manifest=%s\n' "$manifest" >>"$GITHUB_OUTPUT"
+          printf 'artifact_sha=%s\n' "$artifact_sha" >>"$GITHUB_OUTPUT"
+          printf 'manifest_sha=%s\n' "$manifest_sha" >>"$GITHUB_OUTPUT"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661
+        with:
+          subject-path: ${{ steps.build.outputs.artifact }}
+
+      - name: Obtain short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@cabfdba3510de1431bac9dba27511d97497fc100
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ap-south-1
+          role-session-name: portfolio-deployment
+
+      - name: Validate target, upload immutable objects, and deploy
+        id: deploy
+        shell: bash
+        env:
+          EXPECTED_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+          ARTIFACT_PATH: ${{ steps.build.outputs.artifact }}
+          MANIFEST_PATH: ${{ steps.build.outputs.manifest }}
+          ARTIFACT_SHA: ${{ steps.build.outputs.artifact_sha }}
+          MANIFEST_SHA: ${{ steps.build.outputs.manifest_sha }}
+          RELEASE_ID: ${{ steps.build.outputs.release_id }}
+        run: |
+          set -Eeuo pipefail
+          account_id="$(aws sts get-caller-identity --query Account --output text)"
+          [[ "$account_id" == "$EXPECTED_ACCOUNT_ID" ]]
+
+          instance_ids="$(aws ec2 describe-instances \
+            --filters \
+              Name=tag:Project,Values=platform-infrastructure \
+              Name=tag:Environment,Values=production \
+              Name=tag:Name,Values=platform-infrastructure-production-host \
+              Name=instance-state-name,Values=running \
+            --query 'Reservations[].Instances[].InstanceId' \
+            --output text)"
+          read -r -a instances <<<"$instance_ids"
+          [[ "${#instances[@]}" == "1" ]]
+          instance_id="${instances[0]}"
+
+          ping_status="$(aws ssm describe-instance-information \
+            --filters "Key=InstanceIds,Values=$instance_id" \
+            --query 'InstanceInformationList[0].PingStatus' \
+            --output text)"
+          [[ "$ping_status" == "Online" ]]
+
+          bucket="platform-infrastructure-${account_id}-ap-south-1-artifacts"
+          artifact_key="portfolio/${RELEASE_ID}/${ARTIFACT_SHA}/$(basename "$ARTIFACT_PATH")"
+          manifest_key="portfolio/${RELEASE_ID}/${ARTIFACT_SHA}/$(basename "$MANIFEST_PATH")"
+
+          aws s3api put-object \
+            --bucket "$bucket" \
+            --key "$artifact_key" \
+            --body "$ARTIFACT_PATH" \
+            --if-none-match '*' \
+            --server-side-encryption AES256 \
+            --metadata "sha256=$ARTIFACT_SHA" \
+            --output json >/dev/null
+          aws s3api put-object \
+            --bucket "$bucket" \
+            --key "$manifest_key" \
+            --body "$MANIFEST_PATH" \
+            --if-none-match '*' \
+            --server-side-encryption AES256 \
+            --metadata "sha256=$MANIFEST_SHA" \
+            --output json >/dev/null
+
+          parameters="$(jq -cn \
+            --arg bucket "$bucket" \
+            --arg artifact_key "$artifact_key" \
+            --arg artifact_sha "$ARTIFACT_SHA" \
+            --arg manifest_key "$manifest_key" \
+            --arg manifest_sha "$MANIFEST_SHA" \
+            --arg release_id "$RELEASE_ID" \
+            '{
+              ArtifactBucket: [$bucket],
+              ArtifactKey: [$artifact_key],
+              ArtifactSHA256: [$artifact_sha],
+              ManifestKey: [$manifest_key],
+              ManifestSHA256: [$manifest_sha],
+              ReleaseID: [$release_id]
+            }')"
+
+          command_id="$(aws ssm send-command \
+            --document-name platform-infrastructure-production-deploy-portfolio \
+            --instance-ids "$instance_id" \
+            --comment "Deploy immutable portfolio release" \
+            --parameters "$parameters" \
+            --query Command.CommandId \
+            --output text)"
+
+          for attempt in $(seq 1 90); do
+            status="$(aws ssm get-command-invocation \
+              --command-id "$command_id" \
+              --instance-id "$instance_id" \
+              --query Status \
+              --output text)"
+            case "$status" in
+              Success) break ;;
+              Failed | Cancelled | TimedOut | Cancelling)
+                printf 'deployment command ended with status %s\n' "$status" >&2
+                exit 1
+                ;;
+            esac
+            sleep 10
+          done
+          [[ "${status:-}" == "Success" ]]
+
+          printf 'release_id=%s\n' "$RELEASE_ID" >>"$GITHUB_OUTPUT"
+          printf 'command_id=%s\n' "$command_id" >>"$GITHUB_OUTPUT"
+
+      - name: Report non-secret deployment identity
+        shell: bash
+        run: |
+          printf 'release_id=%s\n' '${{ steps.deploy.outputs.release_id }}'
+          printf 'command_id=%s\n' '${{ steps.deploy.outputs.command_id }}'
