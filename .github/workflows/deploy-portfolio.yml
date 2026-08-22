@@ -63,6 +63,20 @@ jobs:
           printf 'artifact_sha=%s\n' "$artifact_sha" >>"$GITHUB_OUTPUT"
           printf 'manifest_sha=%s\n' "$manifest_sha" >>"$GITHUB_OUTPUT"
 
+      - name: Verify exact reviewed artifact hashes
+        shell: bash
+        env:
+          GENERATED_ARTIFACT_SHA: ${{ steps.build.outputs.artifact_sha }}
+          GENERATED_MANIFEST_SHA: ${{ steps.build.outputs.manifest_sha }}
+        run: |
+          set -Eeuo pipefail
+          release=deploy/releases/website-v1.0.0.json
+          expected_artifact_sha="$(jq -er '.expectedArtifact.sha256' "$release")"
+          expected_manifest_sha="$(jq -er '.expectedArtifact.manifestSha256' "$release")"
+
+          [[ "$GENERATED_ARTIFACT_SHA" == "$expected_artifact_sha" ]]
+          [[ "$GENERATED_MANIFEST_SHA" == "$expected_manifest_sha" ]]
+
       - name: Attest build provenance
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661
         with:

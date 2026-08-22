@@ -17,6 +17,56 @@ grep -Fq 'runtime configuration refuses to invent a current link for an existing
 grep -Fq 'ord(character) < 32' deploy/ssm/deploy-portfolio.sh
 grep -Fq 'ord(character) < 32' deploy/ssm/rollback-portfolio.sh
 
+release_definition='deploy/releases/website-v1.0.0.json'
+expected_artifact_sha='bd43b937c621752a94c67c7a1b6495fa837d7ffd43b2bb1a5534a7442a54673d'
+expected_manifest_sha='cc73b3874f514f19557a2f235eb4123199d366cc7c7ed7442b84daa0bc3a0138'
+jq -e \
+  --arg artifact_sha "$expected_artifact_sha" \
+  --arg manifest_sha "$expected_manifest_sha" '
+    .expectedArtifact.sha256 == $artifact_sha and
+    .expectedArtifact.manifestSha256 == $manifest_sha
+  ' "$release_definition" >/dev/null
+
+workflow='.github/workflows/deploy-portfolio.yml'
+hash_gate_line="$(grep -nF -- '- name: Verify exact reviewed artifact hashes' "$workflow" | cut -d: -f1)"
+attestation_line="$(grep -nF -- '- name: Attest build provenance' "$workflow" | cut -d: -f1)"
+credentials_line="$(grep -nF -- '- name: Obtain short-lived AWS credentials' "$workflow" | cut -d: -f1)"
+[[ -n "$hash_gate_line" && -n "$attestation_line" && -n "$credentials_line" ]]
+((hash_gate_line < attestation_line))
+((hash_gate_line < credentials_line))
+grep -Fq ".expectedArtifact.sha256" "$workflow"
+grep -Fq ".expectedArtifact.manifestSha256" "$workflow"
+grep -Fq '[[ "$GENERATED_ARTIFACT_SHA" == "$expected_artifact_sha" ]]' "$workflow"
+grep -Fq '[[ "$GENERATED_MANIFEST_SHA" == "$expected_manifest_sha" ]]' "$workflow"
+
+runtime_configurator='deploy/ssm/configure-runtime.sh.tftpl'
+grep -Fq '"schemaVersion": 1' "$runtime_configurator"
+grep -Fq '"release": {"id": "bootstrap"}' "$runtime_configurator"
+grep -Fq 'existing bootstrap manifest semantics differ' "$runtime_configurator"
+grep -Fq 'mv -T -- "$bootstrap_manifest_temporary" "$bootstrap_manifest"' "$runtime_configurator"
+grep -Fq 'chown root:nginx "$bootstrap_manifest"' "$runtime_configurator"
+grep -Fq 'chmod 0440 "$bootstrap_manifest"' "$runtime_configurator"
+python3 - "$runtime_configurator" <<'PYTHON'
+import re
+from pathlib import Path
+import sys
+
+source = Path(sys.argv[1]).read_text(encoding="utf-8")
+match = re.search(r"bootstrap_files = \(\n(?P<entries>.*?)\n\)", source, re.DOTALL)
+if match is None:
+    raise SystemExit("bootstrap manifest file set is missing")
+entries = re.findall(r'^\s+"([^"]+)",$', match.group("entries"), re.MULTILINE)
+expected = [
+    "index.html",
+    "__spa-fallback.html",
+    "rss.xml",
+    "sitemap.xml",
+    "robots.txt",
+]
+if entries != expected or ".platform-manifest.json" in entries:
+    raise SystemExit("bootstrap manifest file set differs")
+PYTHON
+
 temporary="$(mktemp -d)"
 trap 'rm -rf -- "$temporary"' EXIT
 fixture="$temporary/client"
@@ -46,6 +96,7 @@ artifact="website-v1.0.0-0bfde1c170e2b27ec92d98504b6fa25d66543bed.tar.gz"
 manifest="website-v1.0.0-0bfde1c170e2b27ec92d98504b6fa25d66543bed.manifest.json"
 cmp --silent "$first/$artifact" "$second/$artifact"
 cmp --silent "$first/$manifest" "$second/$manifest"
+jq -e 'has("expectedArtifact") | not' "$first/$manifest" >/dev/null
 node deploy/verify-artifact.mjs --artifact "$first/$artifact" --manifest "$first/$manifest" >/dev/null
 
 printf '%s\n' 'deployment and artifact contract checks passed'

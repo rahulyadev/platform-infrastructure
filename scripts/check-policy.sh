@@ -542,6 +542,8 @@ if [[ ! -f "$release_manifest" ]] || ! jq -e '
   .release.sourceRepository == "https://github.com/rahulyadev/website" and
   .release.tag == "v1.0.0" and
   .release.commit == "0bfde1c170e2b27ec92d98504b6fa25d66543bed" and
+  .expectedArtifact.sha256 == "bd43b937c621752a94c67c7a1b6495fa837d7ffd43b2bb1a5534a7442a54673d" and
+  .expectedArtifact.manifestSha256 == "cc73b3874f514f19557a2f235eb4123199d366cc7c7ed7442b84daa0bc3a0138" and
   .toolchain.node == "24.19.0" and
   .toolchain.npm == "11.17.0" and
   .commands.install == "npm ci" and
