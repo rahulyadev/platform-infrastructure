@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+umask 077
+
+if ((EUID != 0)); then
+  printf '%s\n' 'runtime configuration must run as root' >&2
+  exit 1
+fi
+
+if [[ "$(uname -m)" != "aarch64" ]]; then
+  printf '%s\n' 'runtime configuration requires aarch64' >&2
+  exit 1
+fi
+
+sshd_unit="$(systemctl list-unit-files sshd.service --no-legend 2>/dev/null || true)"
+if [[ "$sshd_unit" == sshd.service* ]]; then
+  sshd_active="$(systemctl is-active sshd.service 2>/dev/null || true)"
+  sshd_enabled="$(systemctl is-enabled sshd.service 2>/dev/null || true)"
+  [[ "$sshd_active" == "inactive" ]]
+  [[ "$sshd_enabled" == "disabled" || "$sshd_enabled" == "masked" ]]
+fi
+command -v ss >/dev/null
+if ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq '(^|:|\])22$'; then
+  printf '%s\n' 'runtime configuration refuses a host with a TCP 22 listener' >&2
+  exit 1
+fi
+
+install -d -o root -g root -m 0750 /var/log/platform
+touch /var/log/platform/deployment.log
+chown root:root /var/log/platform/deployment.log
+chmod 0640 /var/log/platform/deployment.log
+exec > >(tee -a /var/log/platform/deployment.log) 2>&1
+
+printf 'runtime configuration started at %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+
+readonly nginx_package='${nginx_package}'
+readonly aws_cli_package='${aws_cli_package}'
+readonly python_package='${python_package}'
+readonly python_libraries_package='${python_libraries_package}'
+readonly python_pip_package='${python_pip_package}'
+readonly python_pip_wheel_package='${python_pip_wheel_package}'
+readonly python_setuptools_package='${python_setuptools_package}'
+readonly python_setuptools_wheel_package='${python_setuptools_wheel_package}'
+readonly python_wheel_package='${python_wheel_package}'
+readonly certbot_version='${certbot_version}'
+readonly certbot_root="/opt/platform/certbot-$${certbot_version}"
+
+packages=(
+  "$nginx_package"
+  "$aws_cli_package"
+  "$python_package"
+  "$python_libraries_package"
+  "$python_pip_package"
+  "$python_pip_wheel_package"
+  "$python_setuptools_package"
+  "$python_setuptools_wheel_package"
+  "$python_wheel_package"
+)
+
+dnf install -y --setopt=install_weak_deps=False "$${packages[@]}"
+
+for package in "$${packages[@]}"; do
+  dnf repoquery --installed --quiet "$package" >/dev/null
+done
+
+install -d -o root -g root -m 0755 /opt/platform
+if [[ ! -x "$certbot_root/bin/certbot" ]] || \
+  [[ "$($certbot_root/bin/certbot --version 2>&1)" != "certbot $${certbot_version}" ]]; then
+  rm -rf -- "$certbot_root"
+  python3.12 -m venv "$certbot_root"
+  "$certbot_root/bin/python" -m pip install \
+    --disable-pip-version-check \
+    --no-cache-dir \
+    "certbot==$${certbot_version}"
+fi
+
+[[ "$($certbot_root/bin/certbot --version 2>&1)" == "certbot $${certbot_version}" ]]
+
+write_b64_file() {
+  local destination="$1"
+  local mode="$2"
+  local payload="$3"
+  local temporary
+
+  temporary="$(mktemp)"
+  base64 --decode <<<"$payload" >"$temporary"
+  install -o root -g root -m "$mode" "$temporary" "$destination"
+  rm -f -- "$temporary"
+}
+
+install -d -o root -g root -m 0755 /etc/nginx/platform /usr/local/lib/platform
+write_b64_file /etc/nginx/nginx.conf 0644 '${nginx_conf_b64}'
+write_b64_file /etc/nginx/platform/security-headers.conf 0644 '${security_headers_b64}'
+write_b64_file /etc/nginx/conf.d/portfolio.conf 0644 '${http_conf_b64}'
+write_b64_file /usr/local/lib/platform/smoke-portfolio.sh 0755 '${smoke_script_b64}'
+
+install -d -o root -g nginx -m 0750 \
+  /srv/platform/portfolio \
+  /srv/platform/portfolio/releases \
+  /srv/platform/portfolio/deployment-state \
+  /var/lib/platform
+install -d -o root -g nginx -m 0750 \
+  /var/lib/platform/acme \
+  /var/lib/platform/acme/.well-known \
+  /var/lib/platform/acme/.well-known/acme-challenge
+
+readonly current_link=/srv/platform/portfolio/current
+if [[ ! -L "$current_link" ]]; then
+  existing_release="$(find /srv/platform/portfolio/releases -mindepth 1 -maxdepth 1 -print -quit)"
+  if [[ -n "$existing_release" ]]; then
+    printf '%s\n' 'runtime configuration refuses to invent a current link for an existing release set' >&2
+    exit 1
+  fi
+  readonly bootstrap_release=/srv/platform/portfolio/releases/bootstrap
+  install -d -o root -g nginx -m 0550 "$bootstrap_release"
+  printf '%s\n' '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Portfolio bootstrap</title></head><body><main>Portfolio deployment pending.</main></body></html>' \
+    >"$bootstrap_release/index.html"
+  cp -- "$bootstrap_release/index.html" "$bootstrap_release/__spa-fallback.html"
+  printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>Portfolio</title></channel></rss>' \
+    >"$bootstrap_release/rss.xml"
+  printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>' \
+    >"$bootstrap_release/sitemap.xml"
+  printf '%s\n' 'User-agent: *' 'Disallow:' >"$bootstrap_release/robots.txt"
+  chown -R root:nginx "$bootstrap_release"
+  find "$bootstrap_release" -type d -exec chmod 0550 {} +
+  find "$bootstrap_release" -type f -exec chmod 0440 {} +
+  ln -s "$bootstrap_release" "$current_link"
+fi
+
+cat >/etc/logrotate.d/platform-deployment <<'LOGROTATE'
+/var/log/platform/deployment.log {
+    weekly
+    rotate 12
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+}
+LOGROTATE
+chown root:root /etc/logrotate.d/platform-deployment
+chmod 0644 /etc/logrotate.d/platform-deployment
+
+cat >/etc/systemd/system/platform-certbot-renew.service <<CERTBOT_SERVICE
+[Unit]
+Description=Renew platform TLS certificate
+After=network-online.target nginx.service
+
+[Service]
+Type=oneshot
+ExecStart=$${certbot_root}/bin/certbot renew --quiet --webroot -w /var/lib/platform/acme --deploy-hook "systemctl reload nginx"
+CERTBOT_SERVICE
+
+cat >/etc/systemd/system/platform-certbot-renew.timer <<'CERTBOT_TIMER'
+[Unit]
+Description=Schedule platform TLS certificate renewal
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 UTC
+RandomizedDelaySec=12h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+CERTBOT_TIMER
+
+chown root:root \
+  /etc/systemd/system/platform-certbot-renew.service \
+  /etc/systemd/system/platform-certbot-renew.timer
+chmod 0644 \
+  /etc/systemd/system/platform-certbot-renew.service \
+  /etc/systemd/system/platform-certbot-renew.timer
+
+systemctl daemon-reload
+systemctl enable --now platform-certbot-renew.timer
+
+nginx -t
+systemctl enable --now nginx.service
+
+printf 'runtime configuration completed at %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"

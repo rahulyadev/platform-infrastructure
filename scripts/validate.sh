@@ -21,6 +21,7 @@ roots=(
   "infra/bootstrap/state"
   "infra/bootstrap/account"
   "infra/live/production/core"
+  "infra/live/production/runtime"
 )
 
 validation_root="$(mktemp -d)"
@@ -72,7 +73,23 @@ fi
 bash -n "${shell_scripts[@]}"
 bash -n infra/modules/host/user_data.sh.tftpl
 
+printf 'Checking rendered shell-template syntax...\n'
+for template in deploy/ssm/configure-runtime.sh.tftpl deploy/ssm/enable-tls.sh.tftpl; do
+  rendered="$validation_root/$(basename "$template" .tftpl).rendered.sh"
+  perl -pe 's/\$\$\{/\$\{/g; s/\$\{[a-z][a-z0-9_]*\}/placeholder/g' "$template" >"$rendered"
+  bash -n "$rendered"
+done
+
+printf 'Checking JavaScript syntax...\n'
+node --check deploy/package-static.mjs
+node --check deploy/verify-artifact.mjs
+
 printf 'Checking repository policy...\n'
 ./scripts/check-policy.sh
+
+printf 'Checking runtime, Nginx, and deployment contracts...\n'
+bash tests/runtime/check.sh
+bash tests/nginx/check.sh
+bash tests/deployment/check.sh
 
 printf 'Validation completed successfully.\n'

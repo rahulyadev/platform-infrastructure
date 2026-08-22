@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "release": {
+    "id": "website-v1.0.0",
+    "sourceRepository": "https://github.com/rahulyadev/website",
+    "tag": "v1.0.0",
+    "commit": "0bfde1c170e2b27ec92d98504b6fa25d66543bed"
+  },
+  "toolchain": {
+    "node": "24.19.0",
+    "npm": "11.17.0"
+  },
+  "commands": {
+    "install": "npm ci",
+    "verify": "npm run verify",
+    "e2e": "npm run test:e2e",
+    "build": "npm run build"
+  },
+  "outputDirectory": "build/client",
+  "expectedStaticInventory": {
+    "requiredFiles": [
+      "index.html",
+      "__spa-fallback.html",
+      "rss.xml",
+      "sitemap.xml",
+      "robots.txt"
+    ],
+    "requiresHtmlRoutes": true,
+    "requiresDataFiles": true
+  },
+  "runtimeEnvironmentVariables": []
+}

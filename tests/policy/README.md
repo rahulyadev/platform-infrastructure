@@ -24,6 +24,29 @@ guidance that suggests adding another active backend block are rejected.
 Tracked `terraform.tfvars` or `terraform.tfvars.json` runtime files remain
 forbidden.
 
+The production runtime root is subject to the same blocking provider and S3
+backend rules. Its state key must be exactly `production/runtime/tofu.tfstate`,
+and it may consume only the approved non-sensitive production-core outputs.
+
+Runtime policy also requires:
+
+- an immutable GitHub OIDC subject built from owner ID, repository ID, and the
+  protected environment, with no wildcard or configured thumbprint;
+- a deployment role with no artifact deletion, bucket mutation, arbitrary
+  `AWS-RunShellScript`, or infrastructure permissions;
+- official GitHub/AWS actions pinned to full commit SHAs, minimal workflow
+  permissions, and `environment: production`;
+- the exact immutable website tag/commit/toolchain release manifest;
+- safe Nginx logging, MIME, cache, TLS, and SPA-versus-asset 404 contracts;
+- daily/monthly instance snapshot schedules and the complete runtime alarm set;
+- no NAT Gateway, load balancer, Route 53, database, container-orchestration,
+  Cognito, public S3, SSH, stored AWS key, state, plan, backend runtime, local
+  variable, environment, or private-key file.
+
+The runtime, Nginx, and deployment test suites build a temporary synthetic
+static site outside Git, package it twice, compare the byte-identical outputs,
+and verify its manifest and archive safety contract.
+
 The public-IP ownership policy requires subnet-level automatic public IPv4
 assignment to remain disabled. The host's sole public IPv4 address is managed
 by exactly one `aws_eip` resource and one explicit `aws_eip_association` that

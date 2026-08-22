@@ -36,6 +36,7 @@ provider_files=(
   "infra/bootstrap/state/providers.tf"
   "infra/bootstrap/account/providers.tf"
   "infra/live/production/core/providers.tf"
+  "infra/live/production/runtime/providers.tf"
 )
 provider_allowlist_pattern='^[[:space:]]*allowed_account_ids[[:space:]]*=[[:space:]]*\[var[.]expected_account_id\][[:space:]]*$'
 
@@ -138,6 +139,7 @@ active_backend_files=(
   "infra/bootstrap/state/backend.tf"
   "infra/bootstrap/account/backend.tf"
   "infra/live/production/core/backend.tf"
+  "infra/live/production/runtime/backend.tf"
 )
 backend_declaration_pattern='^[[:space:]]*backend[[:space:]]+"[^"]+"[[:space:]]*\{[[:space:]]*$'
 s3_backend_pattern='^[[:space:]]*backend[[:space:]]+"s3"[[:space:]]*\{[[:space:]]*$'
@@ -185,11 +187,13 @@ backend_example_files=(
   "infra/bootstrap/state/backend.hcl.example"
   "infra/bootstrap/account/backend.hcl.example"
   "infra/live/production/core/backend.hcl.example"
+  "infra/live/production/runtime/backend.hcl.example"
 )
 backend_example_keys=(
   "bootstrap/state/tofu.tfstate"
   "bootstrap/account/tofu.tfstate"
   "production/core/tofu.tfstate"
+  "production/runtime/tofu.tfstate"
 )
 backend_allowlist_pattern='^[[:space:]]*allowed_account_ids[[:space:]]*=[[:space:]]*\["000000000000"\][[:space:]]*$'
 backend_example_encrypt_pattern='^[[:space:]]*encrypt[[:space:]]*=[[:space:]]*true[[:space:]]*$'
@@ -395,6 +399,194 @@ for file in "${candidate_files[@]}"; do
 done
 if ((${#unsafe_files[@]} > 0)); then
   report_files "unsafe state, plan, environment, key, secret, or backend file" "${unsafe_files[@]}"
+fi
+
+runtime_root="infra/live/production/runtime"
+runtime_required_files=(
+  "$runtime_root/backend.tf"
+  "$runtime_root/backend.hcl.example"
+  "$runtime_root/main.tf"
+  "$runtime_root/providers.tf"
+  "$runtime_root/variables.tf"
+  "$runtime_root/versions.tf"
+  "$runtime_root/.terraform.lock.hcl"
+)
+for file in "${runtime_required_files[@]}"; do
+  if [[ ! -f "$file" ]]; then
+    report_files "required production runtime root file is missing" "$file"
+  fi
+done
+
+if [[ -f "$runtime_root/main.tf" ]]; then
+  if [[ "$(grep -Fxc '    key                 = "production/core/tofu.tfstate"' "$runtime_root/main.tf" || true)" != "1" ]]; then
+    report_files "runtime root must read the exact production-core state key" "$runtime_root/main.tf"
+  fi
+
+  approved_core_outputs=(
+    artifact_bucket_arn
+    artifact_bucket_name
+    backup_bucket_arn
+    backup_bucket_name
+    domains
+    elastic_ip
+    instance_arn
+    instance_id
+    instance_profile_name
+    instance_role_arn
+    root_volume_id
+  )
+  mapfile -t referenced_core_outputs < <(
+    grep -Eo 'data[.]terraform_remote_state[.]core[.]outputs[.][A-Za-z0-9_]+' "$runtime_root/main.tf" \
+      | awk -F. '{print $NF}' \
+      | sort -u
+  )
+  mapfile -t unexpected_core_outputs < <(
+    comm -23 \
+      <(printf '%s\n' "${referenced_core_outputs[@]}" | sort -u) \
+      <(printf '%s\n' "${approved_core_outputs[@]}" | sort -u)
+  )
+  if ((${#unexpected_core_outputs[@]} > 0)); then
+    report_files "runtime root consumes an unapproved production-core output" "$runtime_root/main.tf"
+  fi
+fi
+
+oidc_file="infra/modules/deployment/github_oidc.tf"
+if [[ ! -f "$oidc_file" ]]; then
+  report_files "GitHub OIDC source is missing" "$oidc_file"
+else
+  if ! grep -Eq '^[[:space:]]*url[[:space:]]*=[[:space:]]*"https://token[.]actions[.]githubusercontent[.]com"[[:space:]]*$' "$oidc_file"; then
+    report_files "GitHub OIDC provider URL is not exact" "$oidc_file"
+  fi
+  if ! grep -Fq 'client_id_list' "$oidc_file" || ! grep -Fq '"sts.amazonaws.com"' "$oidc_file"; then
+    report_files "GitHub OIDC audience is not exact" "$oidc_file"
+  fi
+  if grep -Eq '^[[:space:]]*thumbprint_list[[:space:]]*=' "$oidc_file"; then
+    report_files "GitHub OIDC provider must not configure a thumbprint" "$oidc_file"
+  fi
+  if ! grep -Fq 'github_subject = "repo:${var.github_owner}@${format("%.0f", var.github_owner_id)}/${var.github_repository}@${format("%.0f", var.github_repository_id)}:environment:${var.github_environment}"' "$oidc_file"; then
+    report_files "GitHub OIDC subject must bind immutable owner/repository IDs and the environment" "$oidc_file"
+  fi
+  if grep -E 'github_subject.*[*]|token[.]actions[.]githubusercontent[.]com:sub.*[*]' "$oidc_file" >/dev/null; then
+    report_files "wildcard GitHub OIDC subject" "$oidc_file"
+  fi
+fi
+
+deployment_iam_file="infra/modules/deployment/iam.tf"
+if [[ ! -f "$deployment_iam_file" ]]; then
+  report_files "deployment IAM policy source is missing" "$deployment_iam_file"
+else
+  if grep -Eq 's3:(Delete|PutBucket|PutLifecycle|PutBucketPolicy|PutBucketAcl)' "$deployment_iam_file"; then
+    report_files "deployment role contains an S3 delete or bucket-mutation permission" "$deployment_iam_file"
+  fi
+  if grep -Fq 'AWS-RunShellScript' "$deployment_iam_file"; then
+    report_files "GitHub deployment role may invoke the arbitrary AWS shell document" "$deployment_iam_file"
+  fi
+fi
+
+workflow_file=".github/workflows/deploy-portfolio.yml"
+if [[ ! -f "$workflow_file" ]]; then
+  report_files "immutable deployment workflow is missing" "$workflow_file"
+else
+  if ! grep -Eq '^[[:space:]]+environment:[[:space:]]+production[[:space:]]*$' "$workflow_file"; then
+    report_files "deployment workflow must use the protected production environment" "$workflow_file"
+  fi
+  for permission in 'contents: read' 'id-token: write' 'attestations: write'; do
+    if [[ "$(grep -Fxc "  $permission" "$workflow_file" || true)" != "1" ]]; then
+      report_files "deployment workflow permission set is incomplete or duplicated" "$workflow_file"
+    fi
+  done
+  mapfile -t unpinned_actions < <(
+    awk '
+      /^[[:space:]]*uses:[[:space:]]*/ {
+        value = $0
+        sub(/^[[:space:]]*uses:[[:space:]]*/, "", value)
+        if (value !~ /^(actions|aws-actions)\/[A-Za-z0-9._-]+@[0-9a-f]{40}$/) print FILENAME
+      }
+    ' "$workflow_file" | sort -u
+  )
+  if ((${#unpinned_actions[@]} > 0)); then
+    report_files "workflow action is not official and pinned to a full commit SHA" "${unpinned_actions[@]}"
+  fi
+  if grep -Eq 'aws-access-key-id|aws-secret-access-key|AWS-RunShellScript|pull_request_target' "$workflow_file"; then
+    report_files "deployment workflow contains a stored-key, arbitrary-shell, or untrusted-trigger pattern" "$workflow_file"
+  fi
+fi
+
+nginx_files=(
+  "config/nginx/nginx.conf"
+  "config/nginx/portfolio-http.conf.tftpl"
+  "config/nginx/portfolio-tls.conf.tftpl"
+  "config/nginx/security-headers.conf"
+)
+for file in "${nginx_files[@]}"; do
+  [[ -f "$file" ]] || report_files "required Nginx contract file is missing" "$file"
+done
+if [[ -f config/nginx/nginx.conf ]]; then
+  for token in '$uri' '$request_method' '$server_protocol' '$status' '$body_bytes_sent' '$request_time' '$realpath_root'; do
+    grep -Fq "$token" config/nginx/nginx.conf || report_files "Nginx safe access log is missing a required field" config/nginx/nginx.conf
+  done
+  if grep -Eq '\$args|\$cookie_|\$http_authorization|\$request_body|"\$request"' config/nginx/nginx.conf; then
+    report_files "Nginx log format contains query, cookie, authorization, body, or raw-request data" config/nginx/nginx.conf
+  fi
+fi
+for file in config/nginx/portfolio-http.conf.tftpl config/nginx/portfolio-tls.conf.tftpl; do
+  if [[ -f "$file" ]]; then
+    for token in 'text/x-script' 'application/rss+xml; charset=utf-8' 'application/xml; charset=utf-8' 'no-cache, max-age=0, must-revalidate' 'public, max-age=31536000, immutable' 'no-store' '__spa-fallback.html' '=404'; do
+      grep -Fq "$token" "$file" || report_files "Nginx routing, MIME, cache, or 404 contract is incomplete" "$file"
+    done
+  fi
+done
+
+release_manifest="deploy/releases/website-v1.0.0.json"
+if [[ ! -f "$release_manifest" ]] || ! jq -e '
+  .release.sourceRepository == "https://github.com/rahulyadev/website" and
+  .release.tag == "v1.0.0" and
+  .release.commit == "0bfde1c170e2b27ec92d98504b6fa25d66543bed" and
+  .toolchain.node == "24.19.0" and
+  .toolchain.npm == "11.17.0" and
+  .commands.install == "npm ci" and
+  .commands.verify == "npm run verify" and
+  .commands.e2e == "npm run test:e2e" and
+  .commands.build == "npm run build" and
+  .outputDirectory == "build/client" and
+  .runtimeEnvironmentVariables == []
+' "$release_manifest" >/dev/null 2>&1; then
+  report_files "immutable website release manifest does not match the approved release" "$release_manifest"
+fi
+
+snapshot_file="infra/modules/snapshot_policy/main.tf"
+if [[ ! -f "$snapshot_file" ]] || \
+  [[ "$(grep -Fxc '    resource_types = ["INSTANCE"]' "$snapshot_file" || true)" != "1" ]] || \
+  [[ "$(grep -Ec 'cron_expression[[:space:]]*=[[:space:]]*"cron\(0 (3 \* \*|4 1 \*) \? \*\)"' "$snapshot_file" || true)" != "2" ]]; then
+  report_files "daily and monthly instance snapshot schedules are incomplete" "$snapshot_file"
+fi
+
+monitoring_alarm_file="infra/modules/monitoring/alarms.tf"
+if [[ -f "$monitoring_alarm_file" ]]; then
+  for metric in StatusCheckFailed CPUUtilization CPUCreditBalance CPUSurplusCreditsCharged mem_used_percent disk_used_percent disk_inodes_used disk_inodes_total procstat_lookup_pid_count; do
+    grep -Fq "\"$metric\"" "$monitoring_alarm_file" || report_files "required runtime alarm metric is missing" "$monitoring_alarm_file"
+  done
+  grep -Fq 'expression  = "100 * inode_used / inode_total"' "$monitoring_alarm_file" || \
+    report_files "root inode alarm does not calculate a percentage from emitted inode metrics" "$monitoring_alarm_file"
+  if grep -Fq 'disk_inodes_used_percent' "$monitoring_alarm_file"; then
+    report_files "root inode alarm references a metric the CloudWatch Agent does not emit" "$monitoring_alarm_file"
+  fi
+else
+  report_files "runtime alarm source is missing" "$monitoring_alarm_file"
+fi
+
+cloudwatch_agent_file="config/cloudwatch/agent-config.json.tftpl"
+if [[ -f "$cloudwatch_agent_file" ]]; then
+  for metric in used_percent inodes_used inodes_total; do
+    grep -Fq "\"$metric\"" "$cloudwatch_agent_file" || report_files "CloudWatch Agent disk measurement is missing" "$cloudwatch_agent_file"
+  done
+  if grep -Fq 'inodes_used_percent' "$cloudwatch_agent_file"; then
+    report_files "CloudWatch Agent configuration contains an unsupported inode percentage measurement" "$cloudwatch_agent_file"
+  fi
+  [[ "$(grep -Fc '"drop_original_metrics"' "$cloudwatch_agent_file" || true)" == "3" ]] || \
+    report_files "CloudWatch Agent duplicate original metric suppression is incomplete" "$cloudwatch_agent_file"
+else
+  report_files "CloudWatch Agent configuration template is missing" "$cloudwatch_agent_file"
 fi
 
 if ((failures > 0)); then

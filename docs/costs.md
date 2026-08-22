@@ -18,8 +18,10 @@ expected monthly delta, assumptions, taxes excluded, and price-retrieval date in
 the plan review.
 
 Major categories include EC2 compute, gp3 storage, public IPv4, S3 storage and
-requests, snapshots, data transfer, DNS-provider charges, and any monitoring or
-logging retention added later.
+requests, snapshots, data transfer, CloudWatch custom metrics/alarms/logs, SNS
+notifications, and DNS-provider charges. Runtime cost review must model normal
+low-traffic logs and a conservative ten-times-log-volume case, seven daily and
+three monthly snapshots, and retained immutable artifacts before apply.
 
 ## Cost constraints
 

@@ -1,0 +1,25 @@
+{
+  "platform": "Amazon Linux 2023",
+  "architecture": "aarch64",
+  "discoveredAt": "2026-08-22",
+  "selectionSources": {
+    "host": "read-only Systems Manager RPM and cached repository discovery",
+    "amazonLinux": "official Amazon Linux 2023 latest aarch64 repository metadata",
+    "cloudWatchAgent": "AWS Systems Manager Distributor package metadata",
+    "certbot": "Python Package Index release metadata"
+  },
+  "packages": {
+    "nginx": "nginx-1:1.30.4-1.amzn2023.0.1.aarch64",
+    "awsCli": "awscli-2-2.33.15-1.amzn2023.0.1.noarch",
+    "python": "python3.12-3.12.13-2.amzn2023.0.5.aarch64",
+    "pythonLibraries": "python3.12-libs-3.12.13-2.amzn2023.0.5.aarch64",
+    "pythonPip": "python3.12-pip-23.2.1-4.amzn2023.0.10.noarch",
+    "pythonPipWheel": "python3.12-pip-wheel-23.2.1-4.amzn2023.0.10.noarch",
+    "pythonSetuptools": "python3.12-setuptools-68.2.2-4.amzn2023.0.3.noarch",
+    "pythonSetuptoolsWheel": "python3.12-setuptools-wheel-68.2.2-4.amzn2023.0.3.noarch",
+    "pythonWheel": "python3.12-wheel-1:0.45.1-1.amzn2023.0.1.noarch",
+    "amazonCloudWatchAgent": "1.300071.0b1720",
+    "certbot": "5.7.0",
+    "certbotRequiresPython": ">=3.10"
+  }
+}
