@@ -8,8 +8,22 @@ cd -- "$repository_root"
 [[ "$(grep -R -E '^[[:space:]]*allowed_account_ids[[:space:]]*=[[:space:]]*\[var[.]expected_account_id\]' infra/live/production/runtime/providers.tf | wc -l)" == "1" ]]
 [[ "$(grep -F 'key    = "production/runtime/tofu.tfstate"' infra/live/production/runtime/backend.hcl.example | wc -l)" == "1" ]]
 [[ "$(grep -R -E 'resource[[:space:]]+"aws_cloudwatch_metric_alarm"' infra/modules/monitoring | wc -l)" == "8" ]]
-grep -Fq '"measurement": ["used_percent", "inodes_used", "inodes_total"]' config/cloudwatch/agent-config.json.tftpl
-[[ "$(grep -Fc '"drop_original_metrics"' config/cloudwatch/agent-config.json.tftpl)" == "3" ]]
+jq -e '
+  .metrics.metrics_collected.mem.measurement == ["used_percent"] and
+  (.metrics.metrics_collected.mem | has("drop_original_metrics") | not) and
+  .metrics.metrics_collected.swap.measurement == ["used_percent"] and
+  (.metrics.metrics_collected.swap | has("drop_original_metrics") | not) and
+  .metrics.metrics_collected.disk.measurement == ["used_percent", "inodes_used", "inodes_total"] and
+  .metrics.metrics_collected.disk.drop_original_metrics == ["used_percent", "inodes_used", "inodes_total"] and
+  ([
+    .metrics.metrics_collected
+    | to_entries[]
+    | select(.value | type == "object")
+    | select(.value | has("drop_original_metrics"))
+    | .key
+  ] == ["disk"])
+' config/cloudwatch/agent-config.json.tftpl >/dev/null
+grep -Fq 'metric_name         = "mem_used_percent"' infra/modules/monitoring/alarms.tf
 grep -Fq 'expression  = "100 * inode_used / inode_total"' infra/modules/monitoring/alarms.tf
 ! grep -R -F 'disk_inodes_used_percent' config/cloudwatch infra/modules/monitoring
 [[ "$(grep -R -E 'resource[[:space:]]+"aws_ssm_association"' infra/modules/monitoring infra/modules/deployment | wc -l)" == "3" ]]

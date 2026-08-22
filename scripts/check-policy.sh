@@ -595,8 +595,22 @@ if [[ -f "$cloudwatch_agent_file" ]]; then
   if grep -Fq 'inodes_used_percent' "$cloudwatch_agent_file"; then
     report_files "CloudWatch Agent configuration contains an unsupported inode percentage measurement" "$cloudwatch_agent_file"
   fi
-  [[ "$(grep -Fc '"drop_original_metrics"' "$cloudwatch_agent_file" || true)" == "3" ]] || \
-    report_files "CloudWatch Agent duplicate original metric suppression is incomplete" "$cloudwatch_agent_file"
+  if ! jq -e '
+    .metrics.metrics_collected.mem.measurement == ["used_percent"] and
+    (.metrics.metrics_collected.mem | has("drop_original_metrics") | not) and
+    .metrics.metrics_collected.swap.measurement == ["used_percent"] and
+    (.metrics.metrics_collected.swap | has("drop_original_metrics") | not) and
+    .metrics.metrics_collected.disk.drop_original_metrics == ["used_percent", "inodes_used", "inodes_total"] and
+    ([
+      .metrics.metrics_collected
+      | to_entries[]
+      | select(.value | type == "object")
+      | select(.value | has("drop_original_metrics"))
+      | .key
+    ] == ["disk"])
+  ' "$cloudwatch_agent_file" >/dev/null; then
+    report_files "CloudWatch Agent memory, swap, or disk metric aggregation is unsafe" "$cloudwatch_agent_file"
+  fi
 else
   report_files "CloudWatch Agent configuration template is missing" "$cloudwatch_agent_file"
 fi
