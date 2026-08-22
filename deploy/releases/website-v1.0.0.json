@@ -6,6 +6,10 @@
     "tag": "v1.0.0",
     "commit": "0bfde1c170e2b27ec92d98504b6fa25d66543bed"
   },
+  "expectedArtifact": {
+    "sha256": "bd43b937c621752a94c67c7a1b6495fa837d7ffd43b2bb1a5534a7442a54673d",
+    "manifestSha256": "cc73b3874f514f19557a2f235eb4123199d366cc7c7ed7442b84daa0bc3a0138"
+  },
   "toolchain": {
     "node": "24.19.0",
     "npm": "11.17.0"

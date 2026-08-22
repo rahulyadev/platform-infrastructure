@@ -106,13 +106,14 @@ install -d -o root -g nginx -m 0750 \
   /var/lib/platform/acme/.well-known/acme-challenge
 
 readonly current_link=/srv/platform/portfolio/current
+readonly bootstrap_release=/srv/platform/portfolio/releases/bootstrap
+readonly bootstrap_manifest="$bootstrap_release/.platform-manifest.json"
 if [[ ! -L "$current_link" ]]; then
   existing_release="$(find /srv/platform/portfolio/releases -mindepth 1 -maxdepth 1 -print -quit)"
   if [[ -n "$existing_release" ]]; then
     printf '%s\n' 'runtime configuration refuses to invent a current link for an existing release set' >&2
     exit 1
   fi
-  readonly bootstrap_release=/srv/platform/portfolio/releases/bootstrap
   install -d -o root -g nginx -m 0550 "$bootstrap_release"
   printf '%s\n' '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Portfolio bootstrap</title></head><body><main>Portfolio deployment pending.</main></body></html>' \
     >"$bootstrap_release/index.html"
@@ -127,6 +128,87 @@ if [[ ! -L "$current_link" ]]; then
   find "$bootstrap_release" -type f -exec chmod 0440 {} +
   ln -s "$bootstrap_release" "$current_link"
 fi
+
+bootstrap_manifest_temporary="$bootstrap_release/.platform-manifest.json.next.$$"
+bootstrap_manifest_action="$(python3 - "$bootstrap_release" "$bootstrap_manifest" "$bootstrap_manifest_temporary" <<'PYTHON'
+import hashlib
+import json
+from pathlib import Path, PurePosixPath
+import stat
+import sys
+
+root = Path(sys.argv[1])
+manifest_path = Path(sys.argv[2])
+temporary_path = Path(sys.argv[3])
+bootstrap_files = (
+    "index.html",
+    "__spa-fallback.html",
+    "rss.xml",
+    "sitemap.xml",
+    "robots.txt",
+)
+
+entries = []
+for relative in bootstrap_files:
+    pure = PurePosixPath(relative)
+    if pure.is_absolute() or relative != pure.as_posix() or ".." in pure.parts:
+        raise SystemExit("unsafe bootstrap manifest path")
+    target = root / relative
+    metadata = target.lstat()
+    if target.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit("bootstrap release file is missing or unsafe")
+    content = target.read_bytes()
+    entries.append({
+        "path": relative,
+        "size": len(content),
+        "sha256": hashlib.sha256(content).hexdigest(),
+    })
+
+expected = {
+    "schemaVersion": 1,
+    "release": {"id": "bootstrap"},
+    "files": entries,
+}
+
+if manifest_path.exists() or manifest_path.is_symlink():
+    metadata = manifest_path.lstat()
+    if manifest_path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
+        raise SystemExit("bootstrap manifest is not a regular file")
+    existing = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if existing != expected:
+        raise SystemExit("existing bootstrap manifest semantics differ")
+    print("existing")
+else:
+    content = f"{json.dumps(expected, indent=2)}\n".encode()
+    with temporary_path.open("xb") as stream:
+        stream.write(content)
+        stream.flush()
+        import os
+        os.fsync(stream.fileno())
+    print("created")
+PYTHON
+)"
+
+case "$bootstrap_manifest_action" in
+  created)
+    chown root:nginx "$bootstrap_manifest_temporary"
+    chmod 0440 "$bootstrap_manifest_temporary"
+    if [[ -e "$bootstrap_manifest" || -L "$bootstrap_manifest" ]]; then
+      rm -f -- "$bootstrap_manifest_temporary"
+      printf '%s\n' 'bootstrap manifest appeared during atomic creation' >&2
+      exit 1
+    fi
+    mv -T -- "$bootstrap_manifest_temporary" "$bootstrap_manifest"
+    ;;
+  existing) ;;
+  *)
+    printf '%s\n' 'unexpected bootstrap manifest action' >&2
+    exit 1
+    ;;
+esac
+
+chown root:nginx "$bootstrap_manifest"
+chmod 0440 "$bootstrap_manifest"
 
 cat >/etc/logrotate.d/platform-deployment <<'LOGROTATE'
 /var/log/platform/deployment.log {
