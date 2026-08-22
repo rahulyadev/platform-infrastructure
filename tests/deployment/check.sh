@@ -33,12 +33,28 @@ grep -Fq '  if [[ "$install_playwright_browser" == true ]]; then' "$build_script
 grep -Fq -- '--install-playwright-browser \' .github/workflows/deploy-portfolio.yml
 ! grep -Eq 'test:e2e.*(\|\||true)|--pass-with-no-tests|--grep-invert' "$build_script" .github/workflows/deploy-portfolio.yml
 
-release_definition='deploy/releases/website-v1.0.0.json'
-expected_artifact_sha='bd43b937c621752a94c67c7a1b6495fa837d7ffd43b2bb1a5534a7442a54673d'
-expected_manifest_sha='cc73b3874f514f19557a2f235eb4123199d366cc7c7ed7442b84daa0bc3a0138'
+release_definition='deploy/releases/website-v1.0.1.json'
+historical_release_definition='deploy/releases/website-v1.0.0.json'
+expected_artifact_sha='5515111352fadc204afe3a49f5330d1f3ea095a3ec3ba17641c284b2b22269a3'
+expected_manifest_sha='ccfffefdc4a4327200caeab4222b2b1803e9768dbf3f1e002d0b25ff45d16d4e'
+[[ -f "$historical_release_definition" ]]
+[[ "$(sha256sum "$historical_release_definition" | awk '{print $1}')" == '7e0650949182892d5423586e51ea889ccc03016ab96b69d869d5b2949e57befe' ]]
 jq -e \
   --arg artifact_sha "$expected_artifact_sha" \
   --arg manifest_sha "$expected_manifest_sha" '
+    .schemaVersion == 1 and
+    .release.id == "website-v1.0.1" and
+    .release.sourceRepository == "https://github.com/rahulyadev/website" and
+    .release.tag == "v1.0.1" and
+    .release.commit == "72794e19609cad9ebb54c41f015b924d0ebe0c0c" and
+    .toolchain.node == "24.19.0" and
+    .toolchain.npm == "11.17.0" and
+    .commands.install == "npm ci" and
+    .commands.verify == "npm run verify" and
+    .commands.e2e == "npm run test:e2e" and
+    .commands.build == "npm run build" and
+    .outputDirectory == "build/client" and
+    .runtimeEnvironmentVariables == [] and
     .expectedArtifact.sha256 == $artifact_sha and
     .expectedArtifact.manifestSha256 == $manifest_sha
   ' "$release_definition" >/dev/null
@@ -99,17 +115,17 @@ printf '%s\n' 'User-agent: *' >"$fixture/robots.txt"
 
 node deploy/package-static.mjs \
   --input "$fixture" \
-  --release-manifest deploy/releases/website-v1.0.0.json \
+  --release-manifest deploy/releases/website-v1.0.1.json \
   --source-commit-time 1700000000 \
   --output-dir "$first" >/dev/null
 node deploy/package-static.mjs \
   --input "$fixture" \
-  --release-manifest deploy/releases/website-v1.0.0.json \
+  --release-manifest deploy/releases/website-v1.0.1.json \
   --source-commit-time 1700000000 \
   --output-dir "$second" >/dev/null
 
-artifact="website-v1.0.0-0bfde1c170e2b27ec92d98504b6fa25d66543bed.tar.gz"
-manifest="website-v1.0.0-0bfde1c170e2b27ec92d98504b6fa25d66543bed.manifest.json"
+artifact="website-v1.0.1-72794e19609cad9ebb54c41f015b924d0ebe0c0c.tar.gz"
+manifest="website-v1.0.1-72794e19609cad9ebb54c41f015b924d0ebe0c0c.manifest.json"
 cmp --silent "$first/$artifact" "$second/$artifact"
 cmp --silent "$first/$manifest" "$second/$manifest"
 jq -e 'has("expectedArtifact") | not' "$first/$manifest" >/dev/null

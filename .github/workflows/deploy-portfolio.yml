@@ -23,11 +23,11 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          release=deploy/releases/website-v1.0.0.json
+          release=deploy/releases/website-v1.0.1.json
           jq -e '
             .release.sourceRepository == "https://github.com/rahulyadev/website" and
-            .release.tag == "v1.0.0" and
-            .release.commit == "0bfde1c170e2b27ec92d98504b6fa25d66543bed" and
+            .release.tag == "v1.0.1" and
+            .release.commit == "72794e19609cad9ebb54c41f015b924d0ebe0c0c" and
             .toolchain.node == "24.19.0" and
             .toolchain.npm == "11.17.0" and
             .runtimeEnvironmentVariables == []
@@ -52,8 +52,8 @@ jobs:
             --install-playwright-browser \
             --output-dir "$artifact_root"
 
-          release_id="website-v1.0.0"
-          commit="0bfde1c170e2b27ec92d98504b6fa25d66543bed"
+          release_id="website-v1.0.1"
+          commit="72794e19609cad9ebb54c41f015b924d0ebe0c0c"
           artifact="$artifact_root/${release_id}-${commit}.tar.gz"
           manifest="$artifact_root/${release_id}-${commit}.manifest.json"
           artifact_sha="$(sha256sum "$artifact" | awk '{print $1}')"
@@ -72,7 +72,7 @@ jobs:
           GENERATED_MANIFEST_SHA: ${{ steps.build.outputs.manifest_sha }}
         run: |
           set -Eeuo pipefail
-          release=deploy/releases/website-v1.0.0.json
+          release=deploy/releases/website-v1.0.1.json
           expected_artifact_sha="$(jq -er '.expectedArtifact.sha256' "$release")"
           expected_manifest_sha="$(jq -er '.expectedArtifact.manifestSha256' "$release")"
 
