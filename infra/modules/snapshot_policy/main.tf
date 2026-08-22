@@ -33,7 +33,6 @@ resource "aws_dlm_lifecycle_policy" "production" {
 
     parameters {
       exclude_boot_volume = false
-      no_reboot           = true
     }
 
     schedule {

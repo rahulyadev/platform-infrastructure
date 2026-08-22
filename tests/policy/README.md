@@ -38,7 +38,9 @@ Runtime policy also requires:
   permissions, and `environment: production`;
 - the exact immutable website tag/commit/toolchain release manifest;
 - safe Nginx logging, MIME, cache, TLS, and SPA-versus-asset 404 contracts;
-- daily/monthly instance snapshot schedules and the complete runtime alarm set;
+- an instance-targeted EBS snapshot-management policy that includes the boot
+  volume, omits the AMI-only `no_reboot` parameter, and retains the reviewed
+  daily/monthly schedules, plus the complete runtime alarm set;
 - no NAT Gateway, load balancer, Route 53, database, container-orchestration,
   Cognito, public S3, SSH, stored AWS key, state, plan, backend runtime, local
   variable, environment, or private-key file.
