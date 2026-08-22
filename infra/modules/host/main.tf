@@ -56,13 +56,15 @@ resource "aws_iam_instance_profile" "this" {
 }
 
 resource "aws_instance" "this" {
-  ami                         = var.ami_id
-  instance_type               = var.instance_type
-  subnet_id                   = var.subnet_id
-  vpc_security_group_ids      = [var.security_group_id]
-  iam_instance_profile        = aws_iam_instance_profile.this.name
-  associate_public_ip_address = false
-  monitoring                  = false
+  ami                    = var.ami_id
+  instance_type          = var.instance_type
+  subnet_id              = var.subnet_id
+  vpc_security_group_ids = [var.security_group_id]
+  iam_instance_profile   = aws_iam_instance_profile.this.name
+
+  # The subnet disables automatic public-IP assignment. The instance's only
+  # public IPv4 address is managed separately through aws_eip_association.
+  monitoring = false
 
   user_data                   = templatefile("${path.module}/user_data.sh.tftpl", {})
   user_data_replace_on_change = true

@@ -5,6 +5,11 @@ buckets, one custom VPC and public subnet, an Internet Gateway and route table,
 a restrictive edge security group, one Systems Manager-managed ARM64 EC2 host,
 an encrypted gp3 root volume, and one Elastic IP.
 
+The public subnet disables automatic public IPv4 assignment. The instance
+leaves the provider-computed `associate_public_ip_address` argument unset, and
+its sole public IPv4 address is owned by the managed Elastic IP and explicit
+association.
+
 The backend is partial S3 configuration with encryption and native S3 lock
 files. Its required key is `production/core/tofu.tfstate`. This root already has
 its sole active S3 backend block; do not add another backend block. The verified
