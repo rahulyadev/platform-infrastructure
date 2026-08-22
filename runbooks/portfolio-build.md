@@ -1,7 +1,7 @@
 # Immutable portfolio build
 
-The approved input is `rahulyadev/website` tag `v1.0.0`, which must peel to
-commit `0bfde1c170e2b27ec92d98504b6fa25d66543bed`. The build requires Node
+The approved input is `rahulyadev/website` tag `v1.0.1`, which must peel to
+commit `72794e19609cad9ebb54c41f015b924d0ebe0c0c`. The build requires Node
 `24.19.0`, npm `11.17.0`, `npm ci`, verification, E2E tests, and the production
 build. No runtime environment variable is an input.
 

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "release": {
+    "id": "website-v1.0.1",
+    "sourceRepository": "https://github.com/rahulyadev/website",
+    "tag": "v1.0.1",
+    "commit": "72794e19609cad9ebb54c41f015b924d0ebe0c0c"
+  },
+  "expectedArtifact": {
+    "sha256": "5515111352fadc204afe3a49f5330d1f3ea095a3ec3ba17641c284b2b22269a3",
+    "manifestSha256": "ccfffefdc4a4327200caeab4222b2b1803e9768dbf3f1e002d0b25ff45d16d4e"
+  },
+  "toolchain": {
+    "node": "24.19.0",
+    "npm": "11.17.0"
+  },
+  "commands": {
+    "install": "npm ci",
+    "verify": "npm run verify",
+    "e2e": "npm run test:e2e",
+    "build": "npm run build"
+  },
+  "outputDirectory": "build/client",
+  "expectedStaticInventory": {
+    "requiredFiles": [
+      "index.html",
+      "__spa-fallback.html",
+      "rss.xml",
+      "sitemap.xml",
+      "robots.txt"
+    ],
+    "requiresHtmlRoutes": true,
+    "requiresDataFiles": true
+  },
+  "runtimeEnvironmentVariables": []
+}

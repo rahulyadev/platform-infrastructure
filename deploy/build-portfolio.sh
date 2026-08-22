@@ -4,7 +4,7 @@ IFS=$'\n\t'
 umask 077
 
 repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
-release_manifest="$repository_root/deploy/releases/website-v1.0.0.json"
+release_manifest="$repository_root/deploy/releases/website-v1.0.1.json"
 output_root=""
 install_playwright_browser=false
 
@@ -40,8 +40,8 @@ if compgen -A variable | grep -Eq '^(VITE_|PUBLIC_|NEXT_PUBLIC_|REACT_APP_)'; th
 fi
 
 readonly source_repository=https://github.com/rahulyadev/website
-readonly release_tag=v1.0.0
-readonly release_commit=0bfde1c170e2b27ec92d98504b6fa25d66543bed
+readonly release_tag=v1.0.1
+readonly release_commit=72794e19609cad9ebb54c41f015b924d0ebe0c0c
 readonly required_node=24.19.0
 readonly required_npm=11.17.0
 readonly temporary_root="$(mktemp -d)"
@@ -95,8 +95,8 @@ node "$repository_root/deploy/package-static.mjs" \
   --source-commit-time "$source_commit_time" \
   --output-dir "$second_output"
 
-artifact_name="website-v1.0.0-${release_commit}.tar.gz"
-manifest_name="website-v1.0.0-${release_commit}.manifest.json"
+artifact_name="website-v1.0.1-${release_commit}.tar.gz"
+manifest_name="website-v1.0.1-${release_commit}.manifest.json"
 first_artifact="$first_output/$artifact_name"
 second_artifact="$second_output/$artifact_name"
 first_manifest="$first_output/$manifest_name"
