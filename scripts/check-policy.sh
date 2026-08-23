@@ -338,8 +338,23 @@ if ((${#matches[@]} > 0)); then
   report_files "environment domain hardcoded in active OpenTofu" "${matches[@]}"
 fi
 
+public_account_metadata_file="handoffs/platform-foundation-v1.0.0.md"
+expected_public_account_id='402906''459349'
 real_account_id_files=()
 for file in "${candidate_files[@]}"; do
+  if [[ "$file" == "$public_account_metadata_file" ]]; then
+    if ! grep -Fq "$expected_public_account_id" "$file"; then
+      report_files "versioned platform handoff must identify the expected public AWS account" "$file"
+    fi
+
+    if grep -Eo '(^|[^0-9])[0-9]{12}([^0-9]|$)' "$file" \
+      | grep -Eo '[0-9]{12}' \
+      | grep -Fvx "$expected_public_account_id" >/dev/null; then
+      real_account_id_files+=("$file")
+    fi
+    continue
+  fi
+
   if awk '
     {
       if ($0 ~ /^[[:space:]]*"(h1|zh):[A-Za-z0-9+\/=]+",?[[:space:]]*$/) {
