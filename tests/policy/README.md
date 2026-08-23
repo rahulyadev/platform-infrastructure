@@ -58,8 +58,11 @@ the provider computes it after EIP association; lifecycle ignore rules are not
 an accepted workaround.
 
 Canonical `h1:` and `zh:` provider-checksum lines are excluded from the generic
-twelve-digit scan because random checksum text is not an AWS account ID. Other
-lock-file content remains subject to the scan.
+twelve-digit scan because random checksum text is not an AWS account ID. The
+versioned platform-foundation handoff is the sole public-metadata exception: it
+must contain the expected non-secret AWS account ID and rejects every different
+twelve-digit value. Other repository and lock-file content remains subject to
+the generic scan.
 
 The check reports file names rather than matching line content so a detected
 credential-like value is not repeated in output. Policy fixtures can be added

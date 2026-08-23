@@ -12,26 +12,31 @@ with native lock files. The production core is provisioned and converged: one
 ARM64 Amazon Linux 2023 host, its managed Elastic IP, custom VPC/subnet, private
 artifact and backup buckets, and Systems Manager access are live.
 
-The production runtime source defines Nginx, fixed deployment documents,
-CloudWatch monitoring, SNS notifications, EBS snapshot schedules, and a GitHub
-OIDC deployment role. Those runtime resources remain unapplied. Nginx and TLS
-are not active, the immutable portfolio artifact has not been uploaded or
-deployed, and GoDaddy DNS has not been cut over.
+The production runtime is provisioned and converged. Nginx serves the immutable
+`website-v1.0.1` release at [https://rahuly.in](https://rahuly.in), Let's Encrypt
+TLS is active for the apex and `www`, CloudWatch monitoring and eight alarms are
+healthy, SNS is confirmed, and the DLM snapshot policy is enabled. Deployment
+uses GitHub OIDC and fixed Systems Manager documents; GitHub stores no AWS access
+keys. GoDaddy remains the authoritative DNS provider.
+
+Release rollback and a snapshot-to-isolated-host, read-only filesystem restore
+have both been exercised. See the versioned
+[platform foundation handoff](handoffs/platform-foundation-v1.0.0.md) for the
+verified production contract and known limitations.
 
 ## Architecture
 
-The planned production foundation uses:
+The production foundation uses:
 
 - OpenTofu with state stored in a private, encrypted, versioned S3 bucket and
   native S3 lock files after bootstrap.
 - One custom VPC and one public subnet in the application region.
 - One ARM64 Amazon Linux 2023 `t4g.small` instance with an Elastic IP.
 - Systems Manager for administration, with no EC2 key pair or public SSH.
-- Host Nginx at the edge, configured through a fixed Systems Manager document
-  only after the runtime plan is separately approved and applied.
+- Host Nginx at the edge, configured through fixed Systems Manager documents.
 - Private versioned S3 buckets for immutable portfolio artifacts and backups.
 - Versioned release directories and atomic activation for static content.
-- The existing external authoritative DNS provider for the first release.
+- GoDaddy as the external authoritative DNS provider.
 
 This intentionally low-cost design has a single-instance failure domain. See
 [the architecture document](docs/architecture.md) for recovery targets,
@@ -86,10 +91,10 @@ policy rules. It does not run an OpenTofu plan or call AWS intentionally.
 ## OpenTofu roots
 
 Each root has independent provider dependency locks and backend documentation.
-All four roots declare one partial S3 backend with encryption and native lock
-files. Concrete bucket, key, region, and account configuration stays in ignored
-`backend.hcl` files. Bootstrap and core states have been migrated and verified;
-the runtime state key is created only by a separately reviewed runtime apply.
+All four roots use partial S3 backends with encryption and native lock files.
+Concrete bucket, key, region, and account configuration stays in ignored
+`backend.hcl` files. Bootstrap, core, and runtime states are remote, versioned,
+verified, and independently converged.
 
 ## Safety model
 
@@ -99,7 +104,7 @@ the runtime state key is created only by a separately reviewed runtime apply.
 - Credentials and secret values never belong in Git, local environment files,
   CI logs, or documentation.
 - Root is not used for routine work, and root access keys remain absent.
-- GitHub deployment will use OIDC rather than stored AWS access keys.
+- GitHub deployment uses OIDC rather than stored AWS access keys.
 - Production changes require cost and rollback review.
 
 See the [state bootstrap](runbooks/state-bootstrap.md),
@@ -110,9 +115,8 @@ See the [state bootstrap](runbooks/state-bootstrap.md),
 
 ## Scope
 
-This foundation supports one static portfolio host, foundational networking,
-private storage, Systems Manager access, cost controls, and a reviewed runtime
-and immutable-deployment design. Runtime apply, SNS confirmation, GitHub
-environment protection, artifact publication/deployment, TLS issuance, DNS
-cutover, Cognito, databases, Redis, RabbitMQ, multi-AZ designs, load balancers,
-and container orchestration remain separately gated.
+This foundation supports one live static portfolio host, foundational
+networking, private storage, Systems Manager access, cost controls, monitoring,
+immutable deployment, rollback, TLS, and tested snapshot restoration. Cognito,
+Google OAuth, identity routing, databases, Redis, RabbitMQ, multi-AZ designs,
+load balancers, and container orchestration are not provisioned.
