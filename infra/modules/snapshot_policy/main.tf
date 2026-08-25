@@ -47,9 +47,9 @@ resource "aws_dlm_lifecycle_policy" "production" {
         count = var.daily_snapshot_retention_count
       }
 
-      tags_to_add = merge(var.tags, {
+      tags_to_add = {
         BackupPurpose = "daily-host-recovery"
-      })
+      }
     }
 
     schedule {
@@ -64,9 +64,9 @@ resource "aws_dlm_lifecycle_policy" "production" {
         count = var.monthly_snapshot_retention_count
       }
 
-      tags_to_add = merge(var.tags, {
+      tags_to_add = {
         BackupPurpose = "monthly-host-recovery"
-      })
+      }
     }
   }
 

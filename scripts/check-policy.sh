@@ -588,6 +588,41 @@ else
   if [[ "$(grep -Ec 'cron_expression[[:space:]]*=[[:space:]]*"cron\(0 (3 \* \*|4 1 \*) \? \*\)"' "$snapshot_file" || true)" != "2" ]]; then
     report_files "daily and monthly instance snapshot schedules are incomplete" "$snapshot_file"
   fi
+  if [[ "$(grep -Ec '^[[:space:]]*copy_tags[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$snapshot_file" || true)" != "2" ]]; then
+    report_files "snapshot policy must copy source tags in exactly two schedules" "$snapshot_file"
+  fi
+  if grep -Eq '^[[:space:]]*tags_to_add[[:space:]]*=[[:space:]]*merge\([^)]*var[.]tags' "$snapshot_file"; then
+    report_files "snapshot schedules must not duplicate copied common tags in tags_to_add" "$snapshot_file"
+  fi
+  if ! awk '
+    BEGIN { in_tags = 0; maps = 0; entries = 0; daily = 0; monthly = 0; invalid = 0 }
+    /^[[:space:]]*tags_to_add[[:space:]]*=[[:space:]]*\{[[:space:]]*$/ {
+      in_tags = 1
+      maps++
+      next
+    }
+    in_tags && /^[[:space:]]*\}[[:space:]]*$/ {
+      in_tags = 0
+      next
+    }
+    in_tags {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      sub(/[[:space:]]*\/\/.*/, "", line)
+      if (line ~ /^[[:space:]]*$/) next
+      entries++
+      if (line ~ /^[[:space:]]*BackupPurpose[[:space:]]*=[[:space:]]*"daily-host-recovery"[[:space:]]*$/) {
+        daily++
+      } else if (line ~ /^[[:space:]]*BackupPurpose[[:space:]]*=[[:space:]]*"monthly-host-recovery"[[:space:]]*$/) {
+        monthly++
+      } else {
+        invalid++
+      }
+    }
+    END { exit maps == 2 && entries == 2 && daily == 1 && monthly == 1 && invalid == 0 ? 0 : 1 }
+  ' "$snapshot_file"; then
+    report_files "snapshot schedules must add exactly one distinct BackupPurpose tag each" "$snapshot_file"
+  fi
 fi
 
 monitoring_alarm_file="infra/modules/monitoring/alarms.tf"
