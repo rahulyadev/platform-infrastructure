@@ -120,3 +120,9 @@ variable "permissions_boundary_arn" {
     error_message = "permissions_boundary_arn must be null or an IAM policy ARN."
   }
 }
+
+variable "enable_identity_cognito_core" {
+  description = "Create the Cognito User Pool and Identity API resource server."
+  type        = bool
+  default     = false
+}

@@ -77,3 +77,33 @@ output "root_volume_id" {
   description = "Encrypted gp3 root volume ID."
   value       = module.host.root_volume_id
 }
+
+output "identity_cognito_user_pool_id" {
+  description = "Cognito User Pool ID when the disabled-by-default Identity core is enabled."
+  value       = var.enable_identity_cognito_core ? module.identity_cognito_core[0].user_pool_id : null
+}
+
+output "identity_cognito_user_pool_arn" {
+  description = "Cognito User Pool ARN when the disabled-by-default Identity core is enabled."
+  value       = var.enable_identity_cognito_core ? module.identity_cognito_core[0].user_pool_arn : null
+}
+
+output "identity_cognito_user_pool_endpoint" {
+  description = "Regional Cognito endpoint when the disabled-by-default Identity core is enabled."
+  value       = var.enable_identity_cognito_core ? module.identity_cognito_core[0].user_pool_endpoint : null
+}
+
+output "identity_cognito_resource_server_identifier" {
+  description = "Exact Identity API OAuth resource identifier when the Cognito core is enabled."
+  value       = var.enable_identity_cognito_core ? module.identity_cognito_core[0].resource_server_identifier : null
+}
+
+output "identity_cognito_profile_read_scope_identifier" {
+  description = "Exact profile-read scope when the Cognito core is enabled."
+  value       = var.enable_identity_cognito_core ? module.identity_cognito_core[0].profile_read_scope_identifier : null
+}
+
+output "identity_cognito_profile_write_scope_identifier" {
+  description = "Exact profile-write scope when the Cognito core is enabled."
+  value       = var.enable_identity_cognito_core ? module.identity_cognito_core[0].profile_write_scope_identifier : null
+}

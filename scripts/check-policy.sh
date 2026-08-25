@@ -286,10 +286,15 @@ if ((${#tracked_runtime_variable_files[@]} > 0)); then
   report_files "tracked runtime Terraform variable file" "${tracked_runtime_variable_files[@]}"
 fi
 
-forbidden_resources='aws_nat_gateway|aws_lb|aws_alb|aws_db_instance|aws_rds_cluster|aws_ecs_|aws_eks_|kubernetes_|aws_elasticache_|aws_mq_|aws_route53_zone|aws_route53_record|aws_acm_certificate|aws_cognito_'
+forbidden_resources='aws_nat_gateway|aws_lb|aws_alb|aws_db_instance|aws_rds_cluster|aws_ecs_|aws_eks_|kubernetes_|aws_elasticache_|aws_mq_|aws_route53_zone|aws_route53_record|aws_acm_certificate'
 mapfile -t matches < <(grep -El "$forbidden_resources" "${tofu_files[@]}" || true)
 if ((${#matches[@]} > 0)); then
   report_files "forbidden service token in active OpenTofu" "${matches[@]}"
+fi
+
+if ! bash tests/policy/check-cognito-core.sh; then
+  report_files "Identity Cognito core contract check failed" \
+    "tests/policy/check-cognito-core.sh"
 fi
 
 mapfile -t matches < <(grep -El '(^|[[:space:]])(from_port|to_port)[[:space:]]*=[[:space:]]*22([[:space:]]|$)' "${tofu_files[@]}" || true)
