@@ -40,7 +40,9 @@ Runtime policy also requires:
 - safe Nginx logging, MIME, cache, TLS, and SPA-versus-asset 404 contracts;
 - an instance-targeted EBS snapshot-management policy that includes the boot
   volume, omits the AMI-only `no_reboot` parameter, and retains the reviewed
-  daily/monthly schedules, plus the complete runtime alarm set;
+  daily/monthly schedules; both schedules copy source tags and add only their
+  schedule-specific `BackupPurpose` tag, so common tags are never duplicated in
+  `tags_to_add`; plus the complete runtime alarm set;
 - no NAT Gateway, load balancer, Route 53, database, container-orchestration,
   Cognito, public S3, SSH, stored AWS key, state, plan, backend runtime, local
   variable, environment, or private-key file.

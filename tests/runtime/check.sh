@@ -32,6 +32,36 @@ grep -Fq 'expression  = "100 * inode_used / inode_total"' infra/modules/monitori
 [[ "$(grep -Fxc '    resource_types = ["INSTANCE"]' infra/modules/snapshot_policy/main.tf)" == "1" ]]
 [[ "$(grep -Ec '^[[:space:]]*exclude_boot_volume[[:space:]]*=[[:space:]]*false[[:space:]]*$' infra/modules/snapshot_policy/main.tf)" == "1" ]]
 ! grep -Eq '^[[:space:]]*no_reboot[[:space:]]*=' infra/modules/snapshot_policy/main.tf
+[[ "$(grep -Ec '^[[:space:]]*copy_tags[[:space:]]*=[[:space:]]*true[[:space:]]*$' infra/modules/snapshot_policy/main.tf)" == "2" ]]
+[[ "$(grep -Ec '^[[:space:]]*tags_to_add[[:space:]]*=[[:space:]]*\{[[:space:]]*$' infra/modules/snapshot_policy/main.tf)" == "2" ]]
+! grep -Eq '^[[:space:]]*tags_to_add[[:space:]]*=[[:space:]]*merge\([^)]*var[.]tags' infra/modules/snapshot_policy/main.tf
+awk '
+  BEGIN { in_tags = 0; maps = 0; entries = 0; daily = 0; monthly = 0; invalid = 0 }
+  /^[[:space:]]*tags_to_add[[:space:]]*=[[:space:]]*\{[[:space:]]*$/ {
+    in_tags = 1
+    maps++
+    next
+  }
+  in_tags && /^[[:space:]]*\}[[:space:]]*$/ {
+    in_tags = 0
+    next
+  }
+  in_tags {
+    line = $0
+    sub(/[[:space:]]*#.*/, "", line)
+    sub(/[[:space:]]*\/\/.*/, "", line)
+    if (line ~ /^[[:space:]]*$/) next
+    entries++
+    if (line ~ /^[[:space:]]*BackupPurpose[[:space:]]*=[[:space:]]*"daily-host-recovery"[[:space:]]*$/) {
+      daily++
+    } else if (line ~ /^[[:space:]]*BackupPurpose[[:space:]]*=[[:space:]]*"monthly-host-recovery"[[:space:]]*$/) {
+      monthly++
+    } else {
+      invalid++
+    }
+  }
+  END { exit maps == 2 && entries == 2 && daily == 1 && monthly == 1 && invalid == 0 ? 0 : 1 }
+' infra/modules/snapshot_policy/main.tf
 [[ "$(grep -F 'resource "aws_iam_openid_connect_provider" "github"' infra/modules/deployment/github_oidc.tf | wc -l)" == "1" ]]
 ! grep -R -E 'thumbprint_list|github_subject.*[*]' infra/modules/deployment
 
