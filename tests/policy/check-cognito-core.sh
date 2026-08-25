@@ -35,6 +35,54 @@ reject_pattern() {
   fi
 }
 
+require_aggregate_count() {
+  local expected="$1"
+  local pattern="$2"
+  local message="$3"
+  shift 3
+
+  local actual=0
+  local count
+  local file
+
+  for file in "$@"; do
+    count="$(grep -Ec "$pattern" "$file" || true)"
+    actual=$((actual + count))
+  done
+
+  if [[ "$actual" != "$expected" ]]; then
+    fail "$message"
+  fi
+}
+
+reject_aggregate_pattern() {
+  local pattern="$1"
+  local message="$2"
+  shift 2
+
+  local file
+
+  for file in "$@"; do
+    if grep -Eq "$pattern" "$file"; then
+      fail "$message"
+      return
+    fi
+  done
+}
+
+require_text_count() {
+  local expected="$1"
+  local pattern="$2"
+  local text="$3"
+  local message="$4"
+  local actual
+
+  actual="$(grep -Ec "$pattern" <<<"$text" || true)"
+  if [[ "$actual" != "$expected" ]]; then
+    fail "$message"
+  fi
+}
+
 module_root="infra/modules/identity_cognito_core"
 module_main="$module_root/main.tf"
 module_variables="$module_root/variables.tf"
@@ -67,6 +115,52 @@ if ((failures > 0)); then
 fi
 
 mapfile -t tofu_files < <(git ls-files --cached --others --exclude-standard -- '*.tf')
+module_tofu_files=()
+for file in "${tofu_files[@]}"; do
+  if [[ "$file" == "$module_root/"*.tf && "${file#"$module_root/"}" != */* ]]; then
+    module_tofu_files+=("$file")
+  fi
+done
+
+resource_block_pattern='^[[:space:]]*resource[[:space:]]+"[^"]+"[[:space:]]+"[^"]+"[[:space:]]*\{'
+cognito_resource_block_pattern='^[[:space:]]*resource[[:space:]]+"aws_cognito_[^"]+"[[:space:]]+"[^"]+"[[:space:]]*\{'
+user_pool_block_pattern='^[[:space:]]*resource[[:space:]]+"aws_cognito_user_pool"[[:space:]]+"this"[[:space:]]*\{'
+resource_server_block_pattern='^[[:space:]]*resource[[:space:]]+"aws_cognito_resource_server"[[:space:]]+"identity_api"[[:space:]]*\{'
+
+require_aggregate_count 2 "$resource_block_pattern" \
+  "Identity Cognito core module must contain exactly two resource blocks across all module files" \
+  "${module_tofu_files[@]}"
+require_aggregate_count 1 "$user_pool_block_pattern" \
+  "Identity Cognito core module must contain exactly aws_cognito_user_pool.this once" \
+  "${module_tofu_files[@]}"
+require_aggregate_count 1 "$resource_server_block_pattern" \
+  "Identity Cognito core module must contain exactly aws_cognito_resource_server.identity_api once" \
+  "${module_tofu_files[@]}"
+reject_aggregate_pattern '^[[:space:]]*(data|module|provider)[[:space:]]+"' \
+  "Identity Cognito core module files must not contain data, child-module, or provider blocks" \
+  "${module_tofu_files[@]}"
+
+require_aggregate_count 2 "$cognito_resource_block_pattern" \
+  "repository must contain exactly the two approved Cognito resource blocks" \
+  "${tofu_files[@]}"
+require_aggregate_count 1 "$user_pool_block_pattern" \
+  "repository must contain exactly one approved Cognito User Pool block" \
+  "${tofu_files[@]}"
+require_aggregate_count 1 "$resource_server_block_pattern" \
+  "repository must contain exactly one approved Cognito resource server block" \
+  "${tofu_files[@]}"
+reject_aggregate_pattern '^[[:space:]]*data[[:space:]]+"aws_cognito_[^"]+"' \
+  "repository must not contain Cognito data blocks" \
+  "${tofu_files[@]}"
+
+for file in "${tofu_files[@]}"; do
+  if grep -Eq 'aws_cognito_' "$file" && \
+    [[ "$file" != "$module_root/"*.tf || "${file#"$module_root/"}" == */* ]]; then
+    fail "Cognito provider references must remain inside the exact Identity Cognito core module directory"
+    break
+  fi
+done
+
 mapfile -t cognito_resource_files < <(
   grep -El '^[[:space:]]*resource[[:space:]]+"aws_cognito_' "${tofu_files[@]}" || true
 )
@@ -82,6 +176,35 @@ require_count 1 '^[[:space:]]*resource[[:space:]]+"aws_cognito_resource_server"[
   "$module_main" "Identity Cognito core module must contain one exact resource server"
 reject_pattern '^[[:space:]]*(data|module|provider)[[:space:]]+"' "$module_main" \
   "Identity Cognito core module must not contain data, child-module, or provider blocks"
+
+module_absolute="$(realpath -m -- "$repository_root/$module_root")"
+cognito_module_source_count=0
+cognito_module_source_file=""
+for file in "${tofu_files[@]}"; do
+  while IFS= read -r source_value; do
+    if [[ "$source_value" != /* && "$source_value" != ./* && "$source_value" != ../* ]]; then
+      continue
+    fi
+
+    if [[ "$source_value" == /* ]]; then
+      source_absolute="$(realpath -m -- "$source_value")"
+    else
+      source_absolute="$(realpath -m -- "$repository_root/$(dirname -- "$file")/$source_value")"
+    fi
+
+    if [[ "$source_absolute" == "$module_absolute" ]]; then
+      cognito_module_source_count=$((cognito_module_source_count + 1))
+      cognito_module_source_file="$file"
+    fi
+  done < <(
+    sed -nE 's/^[[:space:]]*source[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' "$file"
+  )
+done
+if [[ "$cognito_module_source_count" != "1" ]]; then
+  fail "repository must contain exactly one local source reference to the Identity Cognito core module"
+elif [[ "$cognito_module_source_file" != "$core_main" ]]; then
+  fail "Identity Cognito core module source reference must exist only in production core main.tf"
+fi
 
 require_count 1 '^[[:space:]]*user_pool_tier[[:space:]]*=[[:space:]]*"ESSENTIALS"[[:space:]]*$' \
   "$module_main" "User Pool must explicitly use the ESSENTIALS tier"
@@ -193,6 +316,21 @@ require_count 1 '^[[:space:]]*count[[:space:]]*=[[:space:]]*var[.]enable_identit
   "$core_main" "production Cognito module must use only the explicit boolean gate"
 require_count 1 '^[[:space:]]*source[[:space:]]*=[[:space:]]*"[.][.]/[.][.]/[.][.]/modules/identity_cognito_core"[[:space:]]*$' \
   "$core_main" "production Cognito module source must remain exact"
+identity_cognito_core_block="$(
+  sed -n \
+    '/^[[:space:]]*module[[:space:]]*"identity_cognito_core"[[:space:]]*{[[:space:]]*$/,/^[[:space:]]*}[[:space:]]*$/p' \
+    "$core_main"
+)"
+require_text_count 4 '^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*=' \
+  "$identity_cognito_core_block" "production Cognito module must contain exactly count, source, and two approved inputs"
+require_text_count 1 '^[[:space:]]*count[[:space:]]*=[[:space:]]*var[.]enable_identity_cognito_core[[:space:]]*[?][[:space:]]*1[[:space:]]*:[[:space:]]*0[[:space:]]*$' \
+  "$identity_cognito_core_block" "production Cognito module block must retain the exact default-false count gate"
+require_text_count 1 '^[[:space:]]*source[[:space:]]*=[[:space:]]*"[.][.]/[.][.]/[.][.]/modules/identity_cognito_core"[[:space:]]*$' \
+  "$identity_cognito_core_block" "production Cognito module block must retain the exact local source"
+require_text_count 1 '^[[:space:]]*name_prefix[[:space:]]*=[[:space:]]*local[.]name_prefix[[:space:]]*$' \
+  "$identity_cognito_core_block" "production Cognito module block must retain the exact name_prefix input"
+require_text_count 1 '^[[:space:]]*tags[[:space:]]*=[[:space:]]*local[.]default_tags[[:space:]]*$' \
+  "$identity_cognito_core_block" "production Cognito module block must retain the exact canonical tags input"
 reject_pattern 'enable_identity_cognito_core' "$core_values" \
   "committed production values must not enable or override the default-false Cognito gate"
 

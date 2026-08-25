@@ -25,17 +25,27 @@ Tracked `terraform.tfvars` or `terraform.tfvars.json` runtime files remain
 forbidden.
 
 `tests/policy/check-cognito-core.sh` is the narrow exception to the blanket
-Cognito prohibition. It permits Cognito resources only in
-`infra/modules/identity_cognito_core/main.tf`, requires exactly one User Pool
-and one attached resource server, and enforces the Essentials tier,
-deletion/destroy guards, administrator-only creation and recovery,
-case-sensitive usernames, mutable required email, defensive password policy,
-canonical tags, and exact resource/scope identifiers. It also requires the
-production-core module gate to default to `false`, every new root output to be
-`null` while disabled, and committed production values not to override the
-gate. App clients, identity providers, domains, certificates, Identity Pools,
-Lambda triggers, paid threat protection, messaging side effects, and every
-other Cognito resource remain forbidden.
+Cognito prohibition. Across every Terraform file in
+`infra/modules/identity_cognito_core`, it requires exactly two resource blocks:
+`aws_cognito_user_pool.this` and
+`aws_cognito_resource_server.identity_api`. Every other resource and every
+data, child-module, or provider block in that module are forbidden. Across all
+active repository Terraform files, those must remain the only two Cognito
+resource blocks, Cognito data blocks are forbidden, and Cognito provider
+references may occur only inside that exact module directory.
+
+The repository must contain exactly one normalized local source reference to
+`modules/identity_cognito_core`, including equivalent relative path spellings,
+and it may exist only in `infra/live/production/core/main.tf`. The production
+instantiation must retain its exact module name, default-false count gate,
+source, `name_prefix` and canonical-tag inputs, conditional outputs, and
+committed-value non-enable check. The module contract also enforces the
+Essentials tier, deletion/destroy guards, administrator-only creation and
+recovery, case-sensitive usernames, mutable required email, defensive password
+policy, canonical tags, and exact resource/scope identifiers. App clients,
+identity providers, domains, certificates, Identity Pools, Lambda triggers,
+paid threat protection, messaging side effects, and every other Cognito
+resource remain forbidden.
 
 The production runtime root is subject to the same blocking provider and S3
 backend rules. Its state key must be exactly `production/runtime/tofu.tfstate`,
