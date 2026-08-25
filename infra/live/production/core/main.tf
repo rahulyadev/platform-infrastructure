@@ -62,3 +62,11 @@ module "host" {
   permissions_boundary_arn = var.permissions_boundary_arn
   tags                     = local.default_tags
 }
+
+module "identity_cognito_core" {
+  count  = var.enable_identity_cognito_core ? 1 : 0
+  source = "../../../modules/identity_cognito_core"
+
+  name_prefix = local.name_prefix
+  tags        = local.default_tags
+}

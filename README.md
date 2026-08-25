@@ -59,7 +59,7 @@ resource names do not embed an environment's domain.
 - `infra/live/production/runtime`: isolated runtime, monitoring, snapshot, and
   deployment-control root that reads the core remote state.
 - `infra/modules`: reusable bucket, budget, network, host, runtime monitoring,
-  deployment, and snapshot modules.
+  deployment, snapshot, and disabled Identity Cognito core modules.
 - `config`: reviewed Nginx and CloudWatch Agent configuration.
 - `deploy`: immutable release identity, deterministic artifact tooling, fixed
   Systems Manager scripts, and smoke tests.
@@ -117,6 +117,9 @@ See the [state bootstrap](runbooks/state-bootstrap.md),
 
 This foundation supports one live static portfolio host, foundational
 networking, private storage, Systems Manager access, cost controls, monitoring,
-immutable deployment, rollback, TLS, and tested snapshot restoration. Cognito,
-Google OAuth, identity routing, databases, Redis, RabbitMQ, multi-AZ designs,
-load balancers, and container orchestration are not provisioned.
+immutable deployment, rollback, TLS, and tested snapshot restoration. A
+default-false source scaffold defines only the future Cognito User Pool and
+Identity API resource server; it is not provisioned. Google OAuth, app clients,
+Cognito domain/certificate wiring, identity routing, databases, Redis,
+RabbitMQ, multi-AZ designs, load balancers, and container orchestration are not
+provisioned.

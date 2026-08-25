@@ -48,6 +48,14 @@ release. The domain is supplied as `base_domain`; the root derives the apex,
 certificate in `us-east-1`, even though application resources remain in
 `ap-south-1`.
 
+The production core includes a disabled, default-false Cognito source scaffold.
+It fixes one Essentials-tier, deletion-protected, administrator-created,
+case-sensitive User Pool and one `identity-service://api` resource server with
+exact `profile.read` and `profile.write` scopes. With the gate disabled it has
+no live resource, provider-read, output, or cost effect. App clients, Google
+federation, a managed-login domain and certificate, secrets, DNS, and any apply
+remain separate reviewed work.
+
 ## Availability and recovery
 
 One instance is an intentional single failure domain. The static portfolio has
@@ -80,6 +88,6 @@ application workflow and operating model.
 ## Deliberate exclusions
 
 The baseline has no NAT Gateway, IPv6, VPC endpoints, ALB, RDS, ECS/Fargate,
-Kubernetes, multi-AZ resources, Cognito resources, production Redis, production
-RabbitMQ, or Route 53 authoritative zone. Runtime source does not issue a
-certificate, change DNS, upload an artifact, or deploy the portfolio.
+Kubernetes, multi-AZ resources, live Cognito resources, production Redis,
+production RabbitMQ, or Route 53 authoritative zone. Runtime source does not
+issue a certificate, change DNS, upload an artifact, or deploy the portfolio.

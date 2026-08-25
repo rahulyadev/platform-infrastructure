@@ -21,6 +21,14 @@ logout requirements, client contracts, token semantics, migrations, and health
 endpoints. This repository may provision supporting infrastructure only after
 those interfaces are supplied; it must not infer them.
 
+The Platform production core consumes the established
+`identity-service://api/profile.read` and `profile.write` authorization contract
+in a disabled Cognito scaffold. Platform owns the AWS resource definition and
+eventual source-backed lifecycle; Identity retains ownership of application and
+token semantics. Enabling the scaffold and adding clients, federation, domains,
+secrets, DNS, runtime configuration, or deployment require later explicit
+handoffs and reviews.
+
 ## Design system
 
 `design-system` owns tokens, components, assets, package publication, and UI

@@ -1,9 +1,17 @@
 # Production core
 
-This root defines the planned production foundation: two private versioned S3
-buckets, one custom VPC and public subnet, an Internet Gateway and route table,
-a restrictive edge security group, one Systems Manager-managed ARM64 EC2 host,
+This root defines the production foundation: two private versioned S3 buckets,
+one custom VPC and public subnet, an Internet Gateway and route table, a
+restrictive edge security group, one Systems Manager-managed ARM64 EC2 host,
 an encrypted gp3 root volume, and one Elastic IP.
+
+It also contains a source-only Identity Cognito core scaffold behind
+`enable_identity_cognito_core`. The gate defaults to `false` and is not set in
+committed production values, so the scaffold currently causes no resource,
+data-source, output, or cost action. When separately reviewed and enabled, the
+module would create only one deletion-protected Essentials-tier User Pool and
+the exact `identity-service://api` resource server with `profile.read` and
+`profile.write` scopes.
 
 The public subnet disables automatic public IPv4 assignment. The instance
 leaves the provider-computed `associate_public_ip_address` argument unset, and
@@ -44,12 +52,8 @@ Initialization and validation do not resolve the value; a future plan will.
 resource names remain domain-neutral. The committed production values do not
 include an account ID or credentials.
 
-No resource in this root has been planned or created. Before production go-live,
-separate work must complete bootstrap-state migration, saved plan and cost
-review, monitoring and alarms, an EBS snapshot policy, Nginx and TLS, artifact
-build and deployment, GitHub OIDC, DNS cutover, rollback and restore proof,
-Cognito, and identity-service onboarding. No EC2 instance, VPC, Elastic IP,
-artifact or backup bucket, Nginx, TLS, DNS cutover, monitoring, snapshot policy,
-GitHub OIDC integration, or portfolio deployment exists yet. Databases, Redis,
-RabbitMQ, Route 53 authoritative DNS, load balancers, and orchestrators are not
-part of this root.
+The Cognito gate must not be enabled until a fresh plan and cost review are
+separately authorized. Google IdP wiring, confidential app clients, managed
+login domain and certificate resources, DNS, secrets, and identity-service
+onboarding remain later increments. Databases, Redis, RabbitMQ, Route 53
+authoritative DNS, load balancers, and orchestrators are not part of this root.
