@@ -5,13 +5,25 @@ one custom VPC and public subnet, an Internet Gateway and route table, a
 restrictive edge security group, one Systems Manager-managed ARM64 EC2 host,
 an encrypted gp3 root volume, and one Elastic IP.
 
-It also contains a source-only Identity Cognito core scaffold behind
-`enable_identity_cognito_core`. The gate defaults to `false` and is not set in
-committed production values, so the scaffold currently causes no resource,
-data-source, output, or cost action. When separately reviewed and enabled, the
-module would create only one deletion-protected Essentials-tier User Pool and
-the exact `identity-service://api` resource server with `profile.read` and
+It also contains the reviewed Identity Cognito core behind
+`enable_identity_cognito_core`. The gate defaults to `false` and is absent from
+committed production values. When enabled through protected production input,
+the module owns only one deletion-protected Essentials-tier User Pool and the
+exact `identity-service://api` resource server with `profile.read` and
 `profile.write` scopes.
+
+A separate source-only confidential reference-BFF app-client scaffold is
+behind `enable_identity_reference_bff_client`. Its committed gate defaults to
+`false`, and its application-origin list defaults to empty. Enabling it requires
+an explicit fail-closed root validation: the Cognito-core gate must also be
+enabled, and the origin collection must contain one to four valid production
+HTTPS DNS origins. The module derives only `/auth/callback` and
+`/auth/signed-out` URLs from those origins and configures an
+authorization-code-only, Google-only client with a generated secret, exact
+Identity scopes, 15-minute access and ID tokens, 14-day rotating refresh
+tokens, revocation, least-attribute access, and source-backed destroy
+protection. No production origin or client secret is committed or exposed by
+this root.
 
 The public subnet disables automatic public IPv4 assignment. The instance
 leaves the provider-computed `associate_public_ip_address` argument unset, and
@@ -52,8 +64,8 @@ Initialization and validation do not resolve the value; a future plan will.
 resource names remain domain-neutral. The committed production values do not
 include an account ID or credentials.
 
-The Cognito gate must not be enabled until a fresh plan and cost review are
-separately authorized. Google IdP wiring, confidential app clients, managed
-login domain and certificate resources, DNS, secrets, and identity-service
-onboarding remain later increments. Databases, Redis, RabbitMQ, Route 53
-authoritative DNS, load balancers, and orchestrators are not part of this root.
+The reference-BFF client gate must remain disabled until its production origin,
+Google IdP, and secret-custody wiring are separately reviewed. Managed-login
+domain and certificate resources, DNS, identity-service onboarding, databases,
+Redis, RabbitMQ, Route 53 authoritative DNS, load balancers, and orchestrators
+remain outside this scaffold.

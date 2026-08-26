@@ -28,23 +28,42 @@ forbidden.
 Cognito prohibition. Across every Terraform file in
 `infra/modules/identity_cognito_core`, it requires exactly two resource blocks:
 `aws_cognito_user_pool.this` and
-`aws_cognito_resource_server.identity_api`. Every other resource and every
-data, child-module, or provider block in that module are forbidden. Across all
-active repository Terraform files, those must remain the only two Cognito
-resource blocks, Cognito data blocks are forbidden, and Cognito provider
-references may occur only inside that exact module directory.
+`aws_cognito_resource_server.identity_api`. Across every Terraform file in
+`infra/modules/identity_cognito_reference_bff_client`, it requires exactly one
+resource block: `aws_cognito_user_pool_client.reference_bff`. Every other
+resource and every data, child-module, or provider block in either module are
+forbidden; the client module also forbids import, moved, check, and provisioner
+blocks. Across all active repository Terraform files, those three blocks must
+remain the complete Cognito resource inventory, Cognito data blocks are
+forbidden, and Cognito provider references may occur only inside those exact
+module directories.
 
 The repository must contain exactly one normalized local source reference to
-`modules/identity_cognito_core`, including equivalent relative path spellings,
-and it may exist only in `infra/live/production/core/main.tf`. The production
-instantiation must retain its exact module name, default-false count gate,
-source, `name_prefix` and canonical-tag inputs, conditional outputs, and
-committed-value non-enable check. The module contract also enforces the
-Essentials tier, deletion/destroy guards, administrator-only creation and
-recovery, case-sensitive usernames, mutable required email, defensive password
-policy, canonical tags, and exact resource/scope identifiers. App clients,
-identity providers, domains, certificates, Identity Pools, Lambda triggers,
-paid threat protection, messaging side effects, and every other Cognito
+each Cognito module, including equivalent relative path spellings, and both may
+exist only in `infra/live/production/core/main.tf`. The core instantiation must
+retain its exact module name, default-false count gate, source, `name_prefix`
+and canonical-tag inputs, conditional outputs, and committed-value non-enable
+check. The core module contract also enforces the Essentials tier,
+deletion/destroy guards, administrator-only creation and recovery,
+case-sensitive usernames, mutable required email, defensive password policy,
+canonical tags, and exact resource/scope identifiers.
+
+The reference-BFF client instantiation must retain its separate default-false
+gate, empty committed origin default, exact source, fail-closed core outputs,
+canonical name prefix, validated origin input, and null-while-disabled
+non-secret root outputs. An explicit root-variable validation enforces that the
+client gate can be enabled only with the Cognito-core gate and a nonempty origin
+collection; the collection's separate exact grammar, cardinality, and uniqueness
+validation must also pass. The child contract requires a generated secret,
+authorization-code-only OAuth, exact `openid` and Identity scope inputs,
+Google-only provider support, no native/API authentication flow, exact callback
+and signed-out derivation, explicit 15-minute access/ID and 14-day refresh
+validity, enabled ten-second refresh rotation, revocation, user-existence-error
+prevention, three-minute auth sessions, exact email read/write attributes, and
+`prevent_destroy`. Only its child `client_secret` output is sensitive; the root
+must never expose it. No application origin may be committed. Identity
+providers, domains, Identity Pools, certificates, Lambda, users, credentials,
+secret-custody resources, analytics, M2M, and every other deferred Cognito
 resource remain forbidden.
 
 The production runtime root is subject to the same blocking provider and S3
