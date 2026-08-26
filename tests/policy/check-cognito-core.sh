@@ -106,6 +106,8 @@ client_module_main="$client_module_root/main.tf"
 client_module_variables="$client_module_root/variables.tf"
 client_module_outputs="$client_module_root/outputs.tf"
 client_module_versions="$client_module_root/versions.tf"
+authentication_module_root="infra/modules/identity_authentication"
+authentication_module_main="$authentication_module_root/main.tf"
 core_main="infra/live/production/core/main.tf"
 core_variables="infra/live/production/core/variables.tf"
 core_outputs="infra/live/production/core/outputs.tf"
@@ -124,6 +126,7 @@ required_files=(
   "$core_variables"
   "$core_outputs"
   "$core_values"
+  "$authentication_module_main"
 )
 for file in "${required_files[@]}"; do
   if [[ ! -f "$file" ]]; then
@@ -153,6 +156,8 @@ cognito_resource_block_pattern='^[[:space:]]*resource[[:space:]]+"aws_cognito_[^
 user_pool_block_pattern='^[[:space:]]*resource[[:space:]]+"aws_cognito_user_pool"[[:space:]]+"this"[[:space:]]*\{'
 resource_server_block_pattern='^[[:space:]]*resource[[:space:]]+"aws_cognito_resource_server"[[:space:]]+"identity_api"[[:space:]]*\{'
 client_block_pattern='^[[:space:]]*resource[[:space:]]+"aws_cognito_user_pool_client"[[:space:]]+"reference_bff"[[:space:]]*\{'
+google_provider_block_pattern='^[[:space:]]*resource[[:space:]]+"aws_cognito_identity_provider"[[:space:]]+"google"[[:space:]]*\{'
+domain_block_pattern='^[[:space:]]*resource[[:space:]]+"aws_cognito_user_pool_domain"[[:space:]]+"auth"[[:space:]]*\{'
 
 require_aggregate_count 2 "$resource_block_pattern" \
   "Identity Cognito core module must contain exactly two resource blocks across all module files" \
@@ -180,8 +185,8 @@ reject_aggregate_pattern '^[[:space:]]*provisioner[[:space:]]+"' \
   "reference BFF Cognito client module must not contain provisioners" \
   "${client_module_tofu_files[@]}"
 
-require_aggregate_count 3 "$cognito_resource_block_pattern" \
-  "repository must contain exactly the three approved Cognito resource blocks" \
+require_aggregate_count 5 "$cognito_resource_block_pattern" \
+  "repository must contain exactly the five approved Cognito resource blocks" \
   "${tofu_files[@]}"
 require_aggregate_count 1 "$user_pool_block_pattern" \
   "repository must contain exactly one approved Cognito User Pool block" \
@@ -191,6 +196,12 @@ require_aggregate_count 1 "$resource_server_block_pattern" \
   "${tofu_files[@]}"
 require_aggregate_count 1 "$client_block_pattern" \
   "repository must contain exactly one approved reference BFF Cognito app-client block" \
+  "${tofu_files[@]}"
+require_aggregate_count 1 "$google_provider_block_pattern" \
+  "repository must contain exactly one approved Google Cognito identity-provider block" \
+  "${tofu_files[@]}"
+require_aggregate_count 1 "$domain_block_pattern" \
+  "repository must contain exactly one approved Cognito custom-domain block" \
   "${tofu_files[@]}"
 reject_aggregate_pattern '^[[:space:]]*data[[:space:]]+"aws_cognito_[^"]+"' \
   "repository must not contain Cognito data blocks" \
@@ -208,9 +219,12 @@ for file in "${tofu_files[@]}"; do
   if [[ "$file" == "$client_module_root/"*.tf && "${file#"$client_module_root/"}" != */* ]]; then
     approved_cognito_file=true
   fi
+  if [[ "$file" == "$authentication_module_root/"*.tf && "${file#"$authentication_module_root/"}" != */* ]]; then
+    approved_cognito_file=true
+  fi
 
   if [[ "$approved_cognito_file" != true ]]; then
-    fail "Cognito provider references must remain inside the two exact approved Cognito module directories"
+    fail "Cognito provider references must remain inside the three exact approved Cognito module directories"
     break
   fi
 done
@@ -218,10 +232,10 @@ done
 mapfile -t cognito_resource_files < <(
   grep -El '^[[:space:]]*resource[[:space:]]+"aws_cognito_' "${tofu_files[@]}" || true
 )
-mapfile -t expected_cognito_resource_files < <(printf '%s\n' "$module_main" "$client_module_main" | sort)
+mapfile -t expected_cognito_resource_files < <(printf '%s\n' "$module_main" "$client_module_main" "$authentication_module_main" | sort)
 mapfile -t cognito_resource_files < <(printf '%s\n' "${cognito_resource_files[@]}" | sort)
 if [[ "$(printf '%s\n' "${cognito_resource_files[@]}")" != "$(printf '%s\n' "${expected_cognito_resource_files[@]}")" ]]; then
-  fail "Cognito resources must exist only in the exact two approved module main files"
+  fail "Cognito resources must exist only in the exact three approved module main files"
 fi
 
 require_count 2 '^[[:space:]]*resource[[:space:]]+"aws_[^"]+"[[:space:]]+"[^"]+"[[:space:]]*\{' \
@@ -564,8 +578,12 @@ require_text_count 1 '^[[:space:]]*condition[[:space:]]*=[[:space:]]*!var[.]enab
   "$identity_reference_bff_client_gate_block" "production reference BFF client gate must retain its fail-closed prerequisite validation"
 require_text_count 1 '^[[:space:]]*var[.]enable_identity_cognito_core[[:space:]]*&&[[:space:]]*$' \
   "$identity_reference_bff_client_gate_block" "production reference BFF client gate must require the Cognito core gate"
-require_text_count 1 '^[[:space:]]*length[(]var[.]identity_reference_bff_application_origins[)][[:space:]]*>=[[:space:]]*1[[:space:]]*$' \
-  "$identity_reference_bff_client_gate_block" "production reference BFF client gate must require a nonempty origin collection"
+require_text_count 1 '^[[:space:]]*var[.]enable_identity_google_federation[[:space:]]*&&[[:space:]]*$' \
+  "$identity_reference_bff_client_gate_block" "production reference BFF client gate must require Google federation"
+require_text_count 1 '^[[:space:]]*var[.]enable_identity_auth_domain[[:space:]]*&&[[:space:]]*$' \
+  "$identity_reference_bff_client_gate_block" "production reference BFF client gate must require the custom domain"
+require_fixed_count 1 'var.identity_reference_bff_application_origins == [format("https://%s", var.base_domain)]' \
+  "$core_variables" "production reference BFF client gate must require the exact portfolio origin"
 require_count 1 '^[[:space:]]*variable[[:space:]]+"identity_reference_bff_application_origins"[[:space:]]*\{' \
   "$core_variables" "production core must declare one reference BFF application-origin input"
 identity_reference_bff_origins_block="$(
@@ -595,8 +613,8 @@ identity_reference_bff_client_block="$(
     '/^[[:space:]]*module[[:space:]]*"identity_cognito_reference_bff_client"[[:space:]]*{[[:space:]]*$/,/^[[:space:]]*}[[:space:]]*$/p' \
     "$core_main"
 )"
-require_text_count 7 '^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*=' \
-  "$identity_reference_bff_client_block" "production reference BFF client module must contain exactly count, source, and five approved inputs"
+require_text_count 8 '^[[:space:]]*[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*=' \
+  "$identity_reference_bff_client_block" "production reference BFF client module must contain exactly count, source, five approved inputs, and the federation dependency"
 require_text_count 1 '^[[:space:]]*count[[:space:]]*=[[:space:]]*var[.]enable_identity_reference_bff_client[[:space:]]*[?][[:space:]]*1[[:space:]]*:[[:space:]]*0[[:space:]]*$' \
   "$identity_reference_bff_client_block" "production reference BFF client module must use only its explicit boolean gate"
 require_text_count 1 '^[[:space:]]*source[[:space:]]*=[[:space:]]*"[.][.]/[.][.]/[.][.]/modules/identity_cognito_reference_bff_client"[[:space:]]*$' \
@@ -611,9 +629,17 @@ require_text_count 1 '^[[:space:]]*name_prefix[[:space:]]*=[[:space:]]*local[.]n
   "$identity_reference_bff_client_block" "production reference BFF client must use the canonical name prefix"
 require_text_count 1 '^[[:space:]]*application_origins[[:space:]]*=[[:space:]]*var[.]identity_reference_bff_application_origins[[:space:]]*$' \
   "$identity_reference_bff_client_block" "production reference BFF client must consume only the validated root origins"
+require_text_count 1 '^[[:space:]]*depends_on[[:space:]]*=[[:space:]]*\[module[.]identity_authentication\][[:space:]]*$' \
+  "$identity_reference_bff_client_block" "production reference BFF client must wait for the sole Google federation module"
 
-reject_pattern '(enable_identity_cognito_core|enable_identity_reference_bff_client|identity_reference_bff_application_origins)' "$core_values" \
-  "committed production values must not enable Cognito gates or commit a reference BFF origin"
+for gate in enable_identity_cognito_core enable_identity_auth_certificate enable_identity_auth_certificate_validation enable_identity_google_federation enable_identity_auth_domain enable_identity_reference_bff_client enable_identity_client_secret_custody; do
+  require_count 1 "^[[:space:]]*$gate[[:space:]]*=[[:space:]]*false[[:space:]]*$" \
+    "$core_values" "every committed Identity authentication gate must remain explicitly false"
+done
+require_count 1 '^[[:space:]]*identity_reference_bff_application_origins[[:space:]]*=[[:space:]]*\[\][[:space:]]*$' \
+  "$core_values" "the committed reference BFF application origin collection must remain empty"
+require_count 1 '^[[:space:]]*identity_google_credentials_secret_arn[[:space:]]*=[[:space:]]*null[[:space:]]*$' \
+  "$core_values" "the committed Google credential reference must remain null"
 reject_pattern 'https://' "$core_main" \
   "production core module wiring must not contain a committed application origin"
 
@@ -648,10 +674,19 @@ reject_pattern '(client_secret|sensitive[[:space:]]*=[[:space:]]*true)' "$core_o
 reject_pattern 'https://' "$core_outputs" \
   "production core outputs must not contain a committed application origin"
 
-deferred_resource_pattern='^[[:space:]]*resource[[:space:]]+"(aws_acm_certificate[^" ]*|aws_iam_access_key|aws_lambda_[^" ]*|aws_secretsmanager_[^" ]*)"'
-if grep -El "$deferred_resource_pattern" "${tofu_files[@]}" >/dev/null; then
-  fail "deferred certificate, credential, Lambda, or secret-custody resource is present"
-fi
+reject_aggregate_pattern '^[[:space:]]*resource[[:space:]]+"(aws_iam_access_key|aws_lambda_[^" ]*)"' \
+  "static credentials and Lambda resources remain forbidden" "${tofu_files[@]}"
+
+require_count 1 "$google_provider_block_pattern" "$authentication_module_main" \
+  "the authentication module must contain exactly one Google identity provider"
+require_count 1 "$domain_block_pattern" "$authentication_module_main" \
+  "the authentication module must contain exactly one custom Cognito domain"
+require_count 1 '^[[:space:]]*provider_name[[:space:]]*=[[:space:]]*"Google"[[:space:]]*$' \
+  "$authentication_module_main" "the sole Cognito identity provider must be Google"
+require_count 1 '^[[:space:]]*provider_type[[:space:]]*=[[:space:]]*"Google"[[:space:]]*$' \
+  "$authentication_module_main" "the sole Cognito identity-provider type must be Google"
+reject_pattern '"(COGNITO|Facebook|LoginWithAmazon|SignInWithApple|SAML|OIDC)"' "$authentication_module_main" \
+  "no additional or native Cognito identity provider may be enabled"
 
 if ((failures > 0)); then
   printf 'Cognito core policy checks failed with %d violation(s).\n' "$failures" >&2

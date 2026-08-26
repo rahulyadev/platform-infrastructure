@@ -87,4 +87,5 @@ nginx_start_line="$(grep -nF '  systemctl start nginx.service' "$runtime_configu
 ((nginx_active_line < nginx_reload_line))
 ((nginx_reload_line < nginx_start_line))
 
+bash tests/nginx/check-identity.sh
 printf '%s\n' 'Nginx contract checks passed'

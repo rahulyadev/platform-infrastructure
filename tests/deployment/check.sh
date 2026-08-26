@@ -157,4 +157,5 @@ cmp --silent "$first/$manifest" "$second/$manifest"
 jq -e 'has("expectedArtifact") | not' "$first/$manifest" >/dev/null
 node deploy/verify-artifact.mjs --artifact "$first/$artifact" --manifest "$first/$manifest" >/dev/null
 
+bash tests/deployment/check-identity.sh
 printf '%s\n' 'deployment and artifact contract checks passed'

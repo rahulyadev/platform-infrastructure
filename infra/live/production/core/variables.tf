@@ -90,7 +90,7 @@ variable "public_subnet_cidr" {
 variable "instance_type" {
   description = "ARM64-compatible EC2 instance type."
   type        = string
-  default     = "t4g.small"
+  default     = "t4g.medium"
 
   validation {
     condition     = can(regex("^[a-z0-9]+[a-z0-9.]*$", var.instance_type))
@@ -135,9 +135,100 @@ variable "enable_identity_reference_bff_client" {
   validation {
     condition = !var.enable_identity_reference_bff_client || (
       var.enable_identity_cognito_core &&
-      length(var.identity_reference_bff_application_origins) >= 1
+      var.enable_identity_google_federation &&
+      var.enable_identity_auth_domain &&
+      var.identity_reference_bff_application_origins == [format("https://%s", var.base_domain)]
     )
-    error_message = "enable_identity_reference_bff_client requires the Cognito core gate and at least one valid application origin."
+    error_message = "enable_identity_reference_bff_client requires the Cognito core, Google federation, and user-pool domain gates plus the exact portfolio origin."
+  }
+}
+
+variable "enable_identity_auth_certificate" {
+  description = "Request the auth-domain ACM certificate in us-east-1 after the external DNS owner is ready."
+  type        = bool
+  default     = false
+}
+
+variable "enable_identity_auth_certificate_validation" {
+  description = "Complete auth-domain certificate validation after the external DNS records are verified."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = !var.enable_identity_auth_certificate_validation || (
+      var.enable_identity_auth_certificate &&
+      length(var.identity_auth_certificate_validation_record_fqdns) > 0
+    )
+    error_message = "enable_identity_auth_certificate_validation requires the certificate gate and verified external DNS validation records."
+  }
+}
+
+variable "identity_auth_certificate_validation_record_fqdns" {
+  description = "Externally managed ACM validation record FQDNs; empty until the validation checkpoint."
+  type        = list(string)
+  default     = []
+  nullable    = false
+
+  validation {
+    condition = length(distinct(var.identity_auth_certificate_validation_record_fqdns)) == length(var.identity_auth_certificate_validation_record_fqdns) && alltrue([
+      for record in var.identity_auth_certificate_validation_record_fqdns :
+      record == lower(record) &&
+      !strcontains(record, "*") &&
+      can(regex("^([a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?[.]){2,}[a-z0-9-]{2,63}[.]?$", record))
+    ])
+    error_message = "identity_auth_certificate_validation_record_fqdns must contain unique lowercase DNS validation record names without wildcards."
+  }
+}
+
+variable "enable_identity_google_federation" {
+  description = "Create the Google Cognito identity provider after the credentials secret reference is provisioned."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = !var.enable_identity_google_federation || (
+      var.enable_identity_cognito_core &&
+      var.identity_google_credentials_secret_arn != null
+    )
+    error_message = "enable_identity_google_federation requires the Cognito core gate and a Google credentials secret reference."
+  }
+}
+
+variable "identity_google_credentials_secret_arn" {
+  description = "Secrets Manager ARN containing client_id and client_secret for the future Google federation checkpoint."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.identity_google_credentials_secret_arn == null || can(regex("^arn:aws:secretsmanager:ap-south-1:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$", var.identity_google_credentials_secret_arn))
+    error_message = "identity_google_credentials_secret_arn must be null or an ap-south-1 Secrets Manager secret ARN."
+  }
+}
+
+variable "enable_identity_auth_domain" {
+  description = "Attach the auth-domain custom Cognito endpoint after ACM validation and Google federation."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = !var.enable_identity_auth_domain || (
+      var.enable_identity_cognito_core &&
+      var.enable_identity_auth_certificate_validation &&
+      var.enable_identity_google_federation
+    )
+    error_message = "enable_identity_auth_domain requires Cognito core, validated certificate, and Google federation gates."
+  }
+}
+
+variable "enable_identity_client_secret_custody" {
+  description = "Store the generated reference-BFF client secret only after the confidential client is enabled."
+  type        = bool
+  default     = false
+
+  validation {
+    condition     = !var.enable_identity_client_secret_custody || var.enable_identity_reference_bff_client
+    error_message = "enable_identity_client_secret_custody requires the reference-BFF client gate."
   }
 }
 

@@ -122,3 +122,33 @@ output "identity_reference_bff_logout_urls" {
   description = "Validated reference-BFF logout URLs when its disabled-by-default gate is enabled."
   value       = var.enable_identity_reference_bff_client ? module.identity_cognito_reference_bff_client[0].logout_urls : null
 }
+
+output "identity_auth_certificate_arn" {
+  description = "Non-secret auth-domain certificate ARN when the certificate gate is enabled."
+  value       = var.enable_identity_auth_certificate ? module.identity_authentication[0].certificate_arn : null
+}
+
+output "identity_auth_certificate_dns_validation_records" {
+  description = "Non-secret ACM DNS validation records for the external DNS owner when requested."
+  value       = var.enable_identity_auth_certificate ? module.identity_authentication[0].certificate_dns_validation_records : null
+}
+
+output "identity_auth_user_pool_domain" {
+  description = "Non-secret custom Cognito domain when the domain gate is enabled."
+  value       = var.enable_identity_auth_domain ? module.identity_authentication[0].user_pool_domain : null
+}
+
+output "identity_auth_user_pool_domain_target" {
+  description = "Non-secret Cognito-managed domain target when the domain gate is enabled."
+  value       = var.enable_identity_auth_domain ? module.identity_authentication[0].user_pool_domain_target : null
+}
+
+output "identity_auth_issuer" {
+  description = "Non-secret issuer URL when the custom Cognito domain is enabled."
+  value       = var.enable_identity_auth_domain ? module.identity_authentication[0].issuer : null
+}
+
+output "identity_auth_jwks_uri" {
+  description = "Non-secret JWKS URI when the custom Cognito domain is enabled."
+  value       = var.enable_identity_auth_domain ? module.identity_authentication[0].jwks_uri : null
+}

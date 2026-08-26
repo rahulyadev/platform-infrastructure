@@ -47,8 +47,12 @@ for file in "${provider_files[@]}"; do
   fi
 
   match_count="$(grep -Ec "$provider_allowlist_pattern" "$file" || true)"
-  if [[ "$match_count" != "1" ]]; then
-    report_files "root provider must contain exactly one expected-account allowlist" "$file"
+  expected_count=1
+  if [[ "$file" == "infra/live/production/core/providers.tf" ]]; then
+    expected_count=2
+  fi
+  if [[ "$match_count" != "$expected_count" ]]; then
+    report_files "root providers must retain the exact expected-account allowlist count" "$file"
   fi
 done
 
@@ -286,7 +290,7 @@ if ((${#tracked_runtime_variable_files[@]} > 0)); then
   report_files "tracked runtime Terraform variable file" "${tracked_runtime_variable_files[@]}"
 fi
 
-forbidden_resources='aws_nat_gateway|aws_lb|aws_alb|aws_db_instance|aws_rds_cluster|aws_ecs_|aws_eks_|kubernetes_|aws_elasticache_|aws_mq_|aws_route53_zone|aws_route53_record|aws_acm_certificate'
+forbidden_resources='aws_nat_gateway|aws_lb|aws_alb|aws_db_instance|aws_rds_cluster|aws_ecs_|aws_eks_|kubernetes_|aws_elasticache_|aws_mq_|aws_route53_zone|aws_route53_record'
 mapfile -t matches < <(grep -El "$forbidden_resources" "${tofu_files[@]}" || true)
 if ((${#matches[@]} > 0)); then
   report_files "forbidden service token in active OpenTofu" "${matches[@]}"
@@ -295,6 +299,11 @@ fi
 if ! bash tests/policy/check-cognito-core.sh; then
   report_files "Identity Cognito core contract check failed" \
     "tests/policy/check-cognito-core.sh"
+fi
+
+if ! bash tests/policy/check-production-identity.sh; then
+  report_files "Production Identity source contract check failed" \
+    "tests/policy/check-production-identity.sh"
 fi
 
 mapfile -t matches < <(grep -El '(^|[[:space:]])(from_port|to_port)[[:space:]]*=[[:space:]]*22([[:space:]]|$)' "${tofu_files[@]}" || true)
@@ -339,8 +348,18 @@ fi
 
 domain_pattern='rahuly[.]in'
 mapfile -t matches < <(grep -El "$domain_pattern" "${tofu_files[@]}" || true)
-if ((${#matches[@]} > 0)); then
-  report_files "environment domain hardcoded in active OpenTofu" "${matches[@]}"
+unexpected_domain_files=()
+for file in "${matches[@]}"; do
+  case "$file" in
+    infra/live/production/runtime/variables.tf|infra/modules/identity_production/documents.tf)
+      ;;
+    *)
+      unexpected_domain_files+=("$file")
+      ;;
+  esac
+done
+if ((${#unexpected_domain_files[@]} > 0)); then
+  report_files "environment domain hardcoded outside the exact production Identity contract" "${unexpected_domain_files[@]}"
 fi
 
 public_account_metadata_file="handoffs/platform-foundation-v1.0.0.md"

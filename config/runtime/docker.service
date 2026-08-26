@@ -1,0 +1,21 @@
+[Unit]
+Description=Docker Application Container Engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/dockerd --host=unix:///run/docker.sock
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=always
+RestartSec=2
+TimeoutStartSec=0
+LimitNOFILE=infinity
+LimitNPROC=infinity
+LimitCORE=infinity
+TasksMax=infinity
+Delegate=yes
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+root:x:0:0:root:/root:/bin/sh
+postgres:x:999:999:PostgreSQL:/var/lib/postgresql:/bin/sh
+pgbackrest:x:2001:2001:pgBackRest:/home/pgbackrest:/bin/sh
+nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin

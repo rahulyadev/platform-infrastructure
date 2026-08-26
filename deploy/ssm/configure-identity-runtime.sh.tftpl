@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+IFS=$'\n\t'
+umask 077
+set +x
+
+readonly docker_version='${docker_version}'
+readonly docker_sha256='${docker_archive_sha256}'
+readonly compose_version='${compose_version}'
+readonly compose_sha256='${compose_binary_sha256}'
+readonly pgbackrest_version='${pgbackrest_version}'
+readonly pgbackrest_sha256='${pgbackrest_tar_sha256}'
+readonly bff_client_secret_arn='${bff_client_secret_arn}'
+readonly bff_runtime_secret_arn='${bff_runtime_secret_arn}'
+readonly database_secret_arn='${database_secret_arn}'
+readonly redis_secret_arn='${redis_secret_arn}'
+readonly backup_secret_arn='${backup_secret_arn}'
+readonly work_root=/var/lib/platform/identity-install
+
+fail() {
+  rm -f -- "$work_root/secret.json" "$work_root/secret.stderr" "$work_root/download.stderr" "$work_root"/*.part
+  printf 'Identity runtime configuration failed safely.\n' >&2
+  exit 1
+}
+trap fail ERR
+
+install -d -m 0700 "$work_root"
+install -d -m 0755 /opt/platform/identity/releases /usr/local/lib/docker/cli-plugins /usr/local/libexec/platform /etc/pgbackrest
+install -d -m 0750 -o root -g 65532 /etc/platform/identity/secrets/{bff,database,postgres,redis,backup} /etc/platform/identity/tls/{postgres,redis}
+
+download_verified() {
+  local url="$1"
+  local expected="$2"
+  local destination="$3"
+  local temporary="$destination.part"
+  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --output "$temporary" "$url" 2>"$work_root/download.stderr"
+  printf '%s  %s\n' "$expected" "$temporary" | sha256sum --check --status
+  mv -f -- "$temporary" "$destination"
+  : >"$work_root/download.stderr"
+}
+
+download_verified "https://download.docker.com/linux/static/stable/aarch64/docker-$${docker_version}.tgz" "$docker_sha256" "$work_root/docker.tgz"
+tar --extract --gzip --file "$work_root/docker.tgz" --directory "$work_root"
+for binary in containerd containerd-shim-runc-v2 ctr docker dockerd docker-init docker-proxy runc; do
+  install -m 0755 "$work_root/docker/$binary" "/usr/local/bin/$binary"
+done
+
+download_verified "https://github.com/docker/compose/releases/download/v$${compose_version}/docker-compose-linux-aarch64" "$compose_sha256" "$work_root/docker-compose"
+install -m 0755 "$work_root/docker-compose" /usr/local/lib/docker/cli-plugins/docker-compose
+
+download_verified "https://github.com/pgbackrest/pgbackrest/releases/download/release%2F$${pgbackrest_version}/pgbackrest-$${pgbackrest_version}.tar.gz" "$pgbackrest_sha256" "$work_root/pgbackrest.tar.gz"
+install -m 0644 "$work_root/pgbackrest.tar.gz" "/opt/platform/identity/pgbackrest-$${pgbackrest_version}.tar.gz"
+
+write_b64() {
+  local encoded="$1"
+  local destination="$2"
+  local mode="$3"
+  local temporary="$destination.tmp"
+  printf '%s' "$encoded" | base64 --decode >"$temporary"
+  chmod "$mode" "$temporary"
+  mv -f -- "$temporary" "$destination"
+}
+
+write_b64 '${compose_b64}' /opt/platform/identity/compose.yml 0644
+write_b64 '${nginx_b64}' /etc/nginx/conf.d/identity-runtime.conf.staged 0644
+write_b64 '${pgbackrest_b64}' /etc/pgbackrest/pgbackrest.conf 0600
+chown root:65532 /etc/pgbackrest/pgbackrest.conf
+chmod 0440 /etc/pgbackrest/pgbackrest.conf
+write_b64 '${systemd_unit_b64}' /etc/systemd/system/identity-stack.service 0644
+write_b64 '${postgres_roles_b64}' /opt/platform/identity/postgres-roles.sql 0600
+write_b64 '${postgres_hba_b64}' /etc/platform/identity/postgres-hba.conf 0644
+write_b64 '${verify_release_b64}' /usr/local/libexec/platform/identity-verify-release 0755
+write_b64 '${health_verify_b64}' /usr/local/libexec/platform/identity-health-verify 0755
+write_b64 '${pgbackrest_sidecar_b64}' /usr/local/libexec/platform/pgbackrest-sidecar 0755
+write_b64 '${docker_service_b64}' /etc/systemd/system/docker.service 0644
+write_b64 '${pgbackrest_passwd_b64}' /etc/platform/identity/pgbackrest-passwd 0644
+
+extract_secret_field() {
+  local source_file="$1"
+  local field="$2"
+  local destination="$3"
+  python3 - "$source_file" "$field" "$destination" <<'PY'
+import json
+import os
+import sys
+source, field, destination = sys.argv[1:]
+with open(source, "r", encoding="utf-8") as handle:
+    value = json.load(handle).get(field)
+if not isinstance(value, str) or not value:
+    raise SystemExit(2)
+temporary = destination + ".tmp"
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o440)
+os.fchown(descriptor, 0, 65532)
+with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
+    handle.write(value)
+os.replace(temporary, destination)
+PY
+}
+
+fetch_secret() {
+  local secret_arn="$1"
+  local capture="$work_root/secret.json"
+  [[ -n "$secret_arn" ]]
+  aws secretsmanager get-secret-value --region ap-south-1 --secret-id "$secret_arn" --version-stage AWSCURRENT --query SecretString --output text >"$capture" 2>"$work_root/secret.stderr"
+  chmod 0600 "$capture"
+  printf '%s' "$capture"
+}
+
+capture="$(fetch_secret "$bff_client_secret_arn")"
+extract_secret_field "$capture" client_secret /etc/platform/identity/secrets/bff/cognito_client_secret
+: >"$capture"
+capture="$(fetch_secret "$bff_runtime_secret_arn")"
+extract_secret_field "$capture" cookie_encryption_key /etc/platform/identity/secrets/bff/cookie_encryption_key
+: >"$capture"
+capture="$(fetch_secret "$database_secret_arn")"
+extract_secret_field "$capture" bootstrap_password /etc/platform/identity/secrets/postgres/bootstrap_password
+for field in migrator_password runtime_password; do
+  extract_secret_field "$capture" "$field" "/etc/platform/identity/secrets/database/$field"
+done
+extract_secret_field "$capture" postgres_ca_crt /etc/platform/identity/tls/postgres/ca.crt
+extract_secret_field "$capture" postgres_server_crt /etc/platform/identity/tls/postgres/server.crt
+extract_secret_field "$capture" postgres_server_key /etc/platform/identity/tls/postgres/server.key
+python3 - /etc/platform/identity/secrets/postgres/bootstrap_password /etc/platform/identity/secrets/database/bootstrap.pgpass <<'PY'
+import os
+import sys
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    password = handle.read()
+if not password or "\n" in password or "\r" in password:
+    raise SystemExit(2)
+password = password.replace("\\", "\\\\").replace(":", "\\:")
+temporary = sys.argv[2] + ".tmp"
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o440)
+os.fchown(descriptor, 0, 65532)
+with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+    handle.write(f"postgres:5432:identity:identity_bootstrap:{password}\n")
+os.replace(temporary, sys.argv[2])
+PY
+: >"$capture"
+capture="$(fetch_secret "$redis_secret_arn")"
+extract_secret_field "$capture" bff_password /etc/platform/identity/secrets/redis/bff_password
+extract_secret_field "$capture" redis_ca_crt /etc/platform/identity/tls/redis/ca.crt
+extract_secret_field "$capture" redis_server_crt /etc/platform/identity/tls/redis/server.crt
+extract_secret_field "$capture" redis_server_key /etc/platform/identity/tls/redis/server.key
+extract_secret_field "$capture" redis_client_crt /etc/platform/identity/tls/redis/client.crt
+extract_secret_field "$capture" redis_client_key /etc/platform/identity/tls/redis/client.key
+python3 - "$capture" /etc/platform/identity/secrets/redis/users.acl <<'PY'
+import json
+import os
+import sys
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    password = json.load(handle).get("bff_password")
+if not isinstance(password, str) or not password or any(character.isspace() for character in password):
+    raise SystemExit(2)
+content = f"user default off\nuser portfolio_bff on >{password} ~portfolio:identity:bff:* +@read +@write -@dangerous\n"
+temporary = sys.argv[2] + ".tmp"
+descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o440)
+os.fchown(descriptor, 0, 65532)
+with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+    handle.write(content)
+os.replace(temporary, sys.argv[2])
+PY
+: >"$capture"
+capture="$(fetch_secret "$backup_secret_arn")"
+extract_secret_field "$capture" repository_cipher /etc/platform/identity/secrets/backup/repository_cipher
+: >"$capture"
+
+rm -f -- "$work_root/secret.json" "$work_root/secret.stderr" "$work_root/download.stderr"
+systemctl daemon-reload
+systemctl enable --now docker.service
+printf 'Identity runtime source configured; no workload was started.\n'

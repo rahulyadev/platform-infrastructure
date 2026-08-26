@@ -1,0 +1,33 @@
+{
+  "docker": {
+    "version": "29.7.2",
+    "archive_sha256": "43d143448adf2c2787704e7d7704fd6d62d367a54c5edaef0a3f75509cb0938d",
+    "platform": "linux/arm64",
+    "source": "https://download.docker.com/linux/static/stable/aarch64/docker-29.7.2.tgz"
+  },
+  "compose": {
+    "version": "2.40.3",
+    "binary_sha256": "d26373b19e89160546d15407516cc59f453030d9bc5b43ba7faf16f7b4980137",
+    "platform": "linux/arm64",
+    "source": "https://github.com/docker/compose/releases/download/v2.40.3/docker-compose-linux-aarch64"
+  },
+  "postgres": {
+    "image": "postgres@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636",
+    "version": "18.4",
+    "platform": "linux/arm64/v8",
+    "source": "https://hub.docker.com/_/postgres"
+  },
+  "redis": {
+    "image": "redis@sha256:5fa2edb1e408fa8235e6db8fab01d1afaaae96c9403ba67b70feceb8661e8621",
+    "version": "8.2.1",
+    "platform": "linux/arm64/v8",
+    "source": "https://hub.docker.com/_/redis"
+  },
+  "pgbackrest": {
+    "image": "woblerr/pgbackrest@sha256:c5bc798fdbee479fc23fd419221755f8f0a97756f3a830ec7cc0c6678067e846",
+    "version": "2.59.1",
+    "tar_sha256": "1cd522afc33b8ff846ef88c55dc238717c9c8817a4f6ca7c9f64887de9c7402d",
+    "platform": "linux/arm64",
+    "source": "https://github.com/pgbackrest/pgbackrest/releases/download/release%2F2.59.1/pgbackrest-2.59.1.tar.gz"
+  }
+}

@@ -194,3 +194,201 @@ variable "monthly_snapshot_retention_count" {
     error_message = "The reviewed monthly snapshot retention is three."
   }
 }
+
+variable "enable_identity_delivery_foundation" {
+  description = "Create the default-disabled Identity image, OIDC, host-permission, SSM, and monitoring foundation."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = !var.enable_identity_delivery_foundation || (
+      var.identity_github_owner == "rahulyadev" &&
+      var.identity_github_repository == "identity-service" &&
+      var.identity_github_owner_id != null &&
+      var.identity_github_repository_id != null &&
+      var.identity_bff_client_secret_arn != null &&
+      var.identity_bff_runtime_secret_arn != null &&
+      var.identity_database_secret_arn != null &&
+      var.identity_redis_secret_arn != null &&
+      var.identity_backup_secret_arn != null
+    )
+    error_message = "enable_identity_delivery_foundation requires the exact Identity service repository, immutable GitHub IDs, and all non-Google runtime secret references."
+  }
+}
+
+variable "enable_identity_production_runtime" {
+  description = "Configure the production Identity runtime only after delivery foundations and immutable ARM64 images are supplied."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = !var.enable_identity_production_runtime || (
+      var.enable_identity_delivery_foundation &&
+      var.identity_api_image != null &&
+      var.identity_bff_image != null &&
+      var.identity_api_image_platform == "linux/arm64" &&
+      var.identity_bff_image_platform == "linux/arm64" &&
+      var.identity_auth_certificate_arn != null &&
+      var.identity_cognito_issuer != null &&
+      var.identity_cognito_jwks_uri == format("%s/.well-known/jwks.json", var.identity_cognito_issuer) &&
+      var.identity_cognito_audience == "identity-service://api" &&
+      var.identity_cognito_client_id != null &&
+      var.identity_bff_origin == "https://rahuly.in" &&
+      var.identity_redis_namespace == "portfolio:identity:bff:"
+    )
+    error_message = "enable_identity_production_runtime requires delivery, ARM64 image proofs, every reviewed authentication reference, the exact portfolio origin, and the exact Redis namespace."
+  }
+}
+
+variable "identity_api_image_platform" {
+  description = "Externally verified API manifest platform; null until digest proof."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "identity_bff_image_platform" {
+  description = "Externally verified BFF manifest platform; null until digest proof."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "identity_auth_certificate_arn" {
+  description = "Validated auth-domain ACM certificate ARN; null until the authentication checkpoint."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "identity_cognito_issuer" {
+  description = "Regional Cognito issuer; null until the authentication checkpoint."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "identity_cognito_jwks_uri" {
+  description = "Exact Cognito JWKS URI; null until the authentication checkpoint."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "identity_cognito_audience" {
+  description = "Exact Identity API resource audience; null until the authentication checkpoint."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "identity_cognito_client_id" {
+  description = "Non-secret reference-BFF Cognito app-client identifier; null until provisioned."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "identity_bff_origin" {
+  description = "Exact production same-origin BFF origin; null until activation."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "identity_redis_namespace" {
+  description = "Exact BFF-only disposable Redis namespace."
+  type        = string
+  default     = "portfolio:identity:bff:"
+}
+
+variable "identity_api_image" {
+  description = "Immutable ARM64 Identity API image reference; null while runtime is disabled."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.identity_api_image == null || can(regex("^[a-z0-9.-]+(?:[:][0-9]+)?/[a-z0-9/_-]+@sha256:[0-9a-f]{64}$", var.identity_api_image))
+    error_message = "identity_api_image must be null or an immutable repository@sha256 reference."
+  }
+}
+
+variable "identity_bff_image" {
+  description = "Immutable ARM64 reference-BFF image reference; null while runtime is disabled."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.identity_bff_image == null || can(regex("^[a-z0-9.-]+(?:[:][0-9]+)?/[a-z0-9/_-]+@sha256:[0-9a-f]{64}$", var.identity_bff_image))
+    error_message = "identity_bff_image must be null or an immutable repository@sha256 reference."
+  }
+}
+
+variable "identity_github_owner" {
+  description = "Exact Identity service GitHub owner."
+  type        = string
+  default     = "rahulyadev"
+}
+
+variable "identity_github_repository" {
+  description = "Exact Identity service GitHub repository."
+  type        = string
+  default     = "identity-service"
+}
+
+variable "identity_github_owner_id" {
+  description = "Immutable Identity service GitHub owner database ID; null until activation proof."
+  type        = number
+  default     = null
+  nullable    = true
+}
+
+variable "identity_github_repository_id" {
+  description = "Immutable Identity service GitHub repository database ID; null until activation proof."
+  type        = number
+  default     = null
+  nullable    = true
+}
+
+variable "identity_github_environment" {
+  description = "Exact protected Identity service GitHub deployment environment."
+  type        = string
+  default     = "production"
+}
+
+variable "identity_bff_client_secret_arn" {
+  description = "Reference-BFF Cognito client secret ARN; null until secret custody is provisioned."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "identity_database_secret_arn" {
+  description = "Identity database credential secret ARN; null until separately provisioned."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "identity_bff_runtime_secret_arn" {
+  description = "Reference-BFF runtime cookie/session secret ARN; null until separately provisioned."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "identity_redis_secret_arn" {
+  description = "Identity Redis ACL credential secret ARN; null until separately provisioned."
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "identity_backup_secret_arn" {
+  description = "Identity pgBackRest repository-encryption secret ARN; null until separately provisioned."
+  type        = string
+  default     = null
+  nullable    = true
+}

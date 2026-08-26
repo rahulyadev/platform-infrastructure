@@ -6,8 +6,8 @@ restrictive edge security group, one Systems Manager-managed ARM64 EC2 host,
 an encrypted gp3 root volume, and one Elastic IP.
 
 It also contains the reviewed Identity Cognito core behind
-`enable_identity_cognito_core`. The gate defaults to `false` and is absent from
-committed production values. When enabled through protected production input,
+`enable_identity_cognito_core`. The gate defaults to `false` and remains
+explicitly false in committed production values. When enabled through protected production input,
 the module owns only one deletion-protected Essentials-tier User Pool and the
 exact `identity-service://api` resource server with `profile.read` and
 `profile.write` scopes.
@@ -15,15 +15,23 @@ exact `identity-service://api` resource server with `profile.read` and
 A separate source-only confidential reference-BFF app-client scaffold is
 behind `enable_identity_reference_bff_client`. Its committed gate defaults to
 `false`, and its application-origin list defaults to empty. Enabling it requires
-an explicit fail-closed root validation: the Cognito-core gate must also be
-enabled, and the origin collection must contain one to four valid production
-HTTPS DNS origins. The module derives only `/auth/callback` and
+an explicit fail-closed root validation: Cognito core, validated ACM certificate,
+Google federation, and the direct Cognito custom domain must be enabled, and the
+origin collection must equal the sole portfolio origin. The module derives only `/auth/callback` and
 `/auth/signed-out` URLs from those origins and configures an
 authorization-code-only, Google-only client with a generated secret, exact
 Identity scopes, 15-minute access and ID tokens, 14-day rotating refresh
 tokens, revocation, least-attribute access, and source-backed destroy
 protection. No production origin or client secret is committed or exposed by
 this root.
+
+The staged authentication module requests only `auth.rahuly.in` in ACM
+`us-east-1`, emits DNS validation descriptors for the external DNS owner, reads
+Google credentials only after an exact secret reference is supplied, and owns
+the sole Google IdP plus direct Cognito custom domain. Certificate request,
+validation, federation, domain, app client, and secret custody each fail closed
+behind ordered default-false gates. Conditional public outputs are null while
+disabled; no root output exposes the generated client secret.
 
 The public subnet disables automatic public IPv4 assignment. The instance
 leaves the provider-computed `associate_public_ip_address` argument unset, and
@@ -64,8 +72,7 @@ Initialization and validation do not resolve the value; a future plan will.
 resource names remain domain-neutral. The committed production values do not
 include an account ID or credentials.
 
-The reference-BFF client gate must remain disabled until its production origin,
-Google IdP, and secret-custody wiring are separately reviewed. Managed-login
-domain and certificate resources, DNS, identity-service onboarding, databases,
-Redis, RabbitMQ, Route 53 authoritative DNS, load balancers, and orchestrators
-remain outside this scaffold.
+Every authentication gate must remain disabled until external DNS readback,
+Google secret custody, client custody, and an approved apply are separately
+reviewed. This root manages no DNS. Runtime/database activation and deployment
+remain separate checkpoints.
