@@ -126,3 +126,38 @@ variable "enable_identity_cognito_core" {
   type        = bool
   default     = false
 }
+
+variable "enable_identity_reference_bff_client" {
+  description = "Create the confidential Cognito app client for the production reference BFF."
+  type        = bool
+  default     = false
+
+  validation {
+    condition = !var.enable_identity_reference_bff_client || (
+      var.enable_identity_cognito_core &&
+      length(var.identity_reference_bff_application_origins) >= 1
+    )
+    error_message = "enable_identity_reference_bff_client requires the Cognito core gate and at least one valid application origin."
+  }
+}
+
+variable "identity_reference_bff_application_origins" {
+  description = "Validated production reference-BFF origins; empty while the client gate is disabled."
+  type        = list(string)
+  default     = []
+  nullable    = false
+
+  validation {
+    condition = (
+      length(var.identity_reference_bff_application_origins) <= 4 &&
+      length(distinct(var.identity_reference_bff_application_origins)) == length(var.identity_reference_bff_application_origins) &&
+      alltrue([
+        for origin in var.identity_reference_bff_application_origins :
+        length(origin) <= 261 &&
+        origin == lower(origin) &&
+        can(regex("^https://([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$", origin))
+      ])
+    )
+    error_message = "identity_reference_bff_application_origins must be empty or contain up to four unique exact lowercase HTTPS DNS origins without userinfo, wildcard, IP literal, port, path, query, fragment, percent encoding, trailing slash, whitespace, control, or non-ASCII characters."
+  }
+}

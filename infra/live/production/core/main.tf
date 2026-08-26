@@ -70,3 +70,14 @@ module "identity_cognito_core" {
   name_prefix = local.name_prefix
   tags        = local.default_tags
 }
+
+module "identity_cognito_reference_bff_client" {
+  count  = var.enable_identity_reference_bff_client ? 1 : 0
+  source = "../../../modules/identity_cognito_reference_bff_client"
+
+  user_pool_id                   = one(module.identity_cognito_core[*].user_pool_id)
+  profile_read_scope_identifier  = one(module.identity_cognito_core[*].profile_read_scope_identifier)
+  profile_write_scope_identifier = one(module.identity_cognito_core[*].profile_write_scope_identifier)
+  name_prefix                    = local.name_prefix
+  application_origins            = var.identity_reference_bff_application_origins
+}

@@ -107,3 +107,18 @@ output "identity_cognito_profile_write_scope_identifier" {
   description = "Exact profile-write scope when the Cognito core is enabled."
   value       = var.enable_identity_cognito_core ? module.identity_cognito_core[0].profile_write_scope_identifier : null
 }
+
+output "identity_reference_bff_client_id" {
+  description = "Reference BFF Cognito app-client ID when its disabled-by-default gate is enabled."
+  value       = var.enable_identity_reference_bff_client ? module.identity_cognito_reference_bff_client[0].client_id : null
+}
+
+output "identity_reference_bff_callback_urls" {
+  description = "Validated reference-BFF callback URLs when its disabled-by-default gate is enabled."
+  value       = var.enable_identity_reference_bff_client ? module.identity_cognito_reference_bff_client[0].callback_urls : null
+}
+
+output "identity_reference_bff_logout_urls" {
+  description = "Validated reference-BFF logout URLs when its disabled-by-default gate is enabled."
+  value       = var.enable_identity_reference_bff_client ? module.identity_cognito_reference_bff_client[0].logout_urls : null
+}
