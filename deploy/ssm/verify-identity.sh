@@ -69,9 +69,25 @@ postgres_id="$("${compose[@]}" ps --quiet postgres)"
 stage=IdentityRedisReachabilityFailure
 redis_id="$("${compose[@]}" ps --quiet redis)"
 [[ -n "$redis_id" && "$(docker inspect --format '{{.State.Health.Status}}' "$redis_id")" == healthy ]]
+redis_probe="reference-bff:production:portfolio:identity:verifier:$RANDOM$RANDOM"
+"${compose[@]}" exec --no-TTY redis sh -eu -c '
+  export REDISCLI_AUTH="$(cat /run/secrets/redis/bff_password)"
+  cli="redis-cli --tls --sni redis --user portfolio_bff --cacert /run/tls/redis/ca.crt"
+  $cli SET "$1:set" value EX 60 >/dev/null
+  test "$($cli GET "$1:set")" = value
+  test "$($cli GETDEL "$1:set")" = value
+  $cli SET "$1:del" value EX 60 >/dev/null
+  test "$($cli DEL "$1:del")" = 1
+  $cli SET "$1:eval" value EX 60 >/dev/null
+  test "$($cli EVAL "return redis.call('"'"'GET'"'"', KEYS[1])" 1 "$1:eval")" = value
+  test "$($cli EVAL "return redis.call('"'"'DEL'"'"', KEYS[1])" 1 "$1:eval")" = 1
+' sh "$redis_probe"
 
 stage=IdentityMigrationFailure
-"${compose[@]}" run --rm migrator check >/dev/null
+observed_head="$("${compose[@]}" exec --no-TTY --env PGPASSFILE=/run/secrets/database/bootstrap.pgpass postgres \
+  psql 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' \
+  --no-psqlrc --tuples-only --no-align --command 'SELECT version_num FROM identity.alembic_version;')"
+[[ "$observed_head" == 0001_initial_identity_schema ]]
 stage=IdentityBackupStale
 "${compose[@]}" exec --no-TTY pgbackrest sh -eu -c \
   'test -f /var/spool/pgbackrest/.last-backup-success; age=$(($(date +%s)-$(stat -c %Y /var/spool/pgbackrest/.last-backup-success))); test "$age" -le 86400'

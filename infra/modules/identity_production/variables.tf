@@ -65,13 +65,18 @@ variable "runtime_secret_arns" {
   type        = set(string)
 
   validation {
-    condition = length(var.runtime_secret_arns) >= 5 && alltrue([
+    condition = length(var.runtime_secret_arns) == 4 && alltrue([
       for arn in var.runtime_secret_arns :
       can(regex("^arn:aws:secretsmanager:ap-south-1:[0-9]{12}:secret:[A-Za-z0-9/_+=.@-]+$", arn)) &&
       !strcontains(lower(arn), "google")
     ])
-    error_message = "runtime_secret_arns must contain exact ap-south-1 non-Google runtime secret ARNs."
+    error_message = "runtime_secret_arns must contain exactly four ap-south-1 non-Google runtime secret ARNs."
   }
+}
+
+variable "alarm_topic_arn" {
+  description = "Existing production alarm SNS topic used by every runtime Identity alarm."
+  type        = string
 }
 
 variable "enable_runtime" {

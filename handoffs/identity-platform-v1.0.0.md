@@ -15,12 +15,14 @@ Status: default-disabled source checkpoint; no production activation.
   `/auth/callback`; signed-out target `/auth/signed-out`.
 - Deployment: `rahulyadev/identity-service`, protected `production` environment, immutable owner
   and repository IDs, digest-only ARM64 images, migration-before-activation, retained prior release.
-- Secrets: references only for Cognito custody, BFF runtime, database/TLS, Redis/TLS, backup
-  encryption, and Google OAuth. Google credentials are Cognito/OpenTofu-only and not host-readable.
+- Secrets: the host reads exactly four references for Cognito client custody, database/TLS,
+  Redis server-TLS/ACL, and backup encryption. Google credentials are Cognito/OpenTofu-only and
+  not host-readable; no separate BFF cookie secret exists.
 - Persistence: PostgreSQL is durable; pgBackRest WAL/PITR uses `identity/production` in the existing
-  backup bucket. Redis is BFF-only disposable state with exact prefix `portfolio:identity:bff:`.
-- Observability: existing eight alarms remain; gated Identity logs/alarms cover readiness, state
-  reachability, restarts/failures, memory/disk, migrations, backup/WAL age, deployment, certificate.
+  backup bucket. Redis is BFF-only disposable state with exact namespace
+  `reference-bff:production:portfolio:identity`.
+- Observability: existing eight alarms remain; thirteen runtime-gated Identity alarms notify the
+  existing SNS topic and treat a stopped 30-minute verifier as unhealthy.
 - Recovery: fixed health/rollback/backup/restore operations; RPO <= 24 hours and RTO <= 4 hours are
   objectives pending repeated restore evidence. Redis loss requires reauthentication.
 - Remaining prerequisites: reviewed apply windows, external DNS validation/readback, Google and

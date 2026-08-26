@@ -14,7 +14,8 @@ This runbook describes future reviewed operations; it authorizes no apply or dep
    `linux/arm64` manifests, and service certificates before delivery/runtime gates.
 5. Run the fixed configure document. After exact `identity.rahuly.in` DNS readback, run the fixed
    Identity TLS document and require its staging and production ACME checks to pass.
-6. Run the fixed migrate/deploy document. Migration, initial full backup, and drift checks must
+6. Run the fixed migrate/deploy document. Exact ECR binding, private registry login, ARM64 digest
+   inspection, published migration, exact-head verification, and the initial full backup must
    pass before the symlink switches. Run the fixed health verifier after activation; its scheduled
    association must continue proving services, capacity, migration, backup/WAL, and certificates.
 
@@ -37,7 +38,8 @@ rehearsals demonstrate them.
 ## Rollback
 
 The deploy document retains the previously healthy immutable release. The fixed rollback document
-switches only to that retained release and immediately reruns health and migration-head checks.
+switches only when the prior release and live database both declare exact compatible head
+`0001_initial_identity_schema`, then immediately reruns health checks.
 Database downgrades and destructive migrations are forbidden; use PITR/forward repair under a new
 review if schema compatibility prevents application rollback.
 

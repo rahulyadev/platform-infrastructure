@@ -26,6 +26,23 @@ server {
 }
 
 server {
+    listen 80;
+    listen [::]:80;
+    server_name identity.${base_domain};
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/lib/platform/acme;
+        default_type text/plain;
+        add_header Cache-Control "no-store" always;
+        try_files $uri =404;
+    }
+
+    location / {
+        return 308 https://identity.${base_domain}$request_uri;
+    }
+}
+
+server {
     listen 443 ssl;
     listen [::]:443 ssl;
     server_name www.${base_domain};

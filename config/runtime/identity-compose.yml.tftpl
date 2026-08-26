@@ -17,7 +17,6 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    group_add: ["65532"]
     shm_size: 256m
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
@@ -25,14 +24,14 @@ services:
       - identity_postgres:/var/lib/postgresql
       - identity_postgres_run:/run/postgresql
       - identity_wal_spool:/var/spool/pgbackrest
-      - /etc/platform/identity/secrets/postgres:/run/secrets/postgres:ro
       - /etc/platform/identity/secrets/database:/run/secrets/database:ro
-      - /etc/platform/identity/tls/postgres:/run/tls/postgres:ro
+      - /etc/platform/identity/tls/postgres-server:/run/tls/postgres:ro
+      - /etc/platform/identity/tls/postgres-client/ca.crt:/run/tls/client/ca.crt:ro
       - /etc/platform/identity/postgres-hba.conf:/run/config/postgres-hba.conf:ro
     environment:
       POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=reject
       POSTGRES_DB: identity
-      POSTGRES_PASSWORD_FILE: /run/secrets/postgres/bootstrap_password
+      POSTGRES_PASSWORD_FILE: /run/secrets/database/bootstrap_password
       POSTGRES_USER: identity_bootstrap
     command:
       - postgres
@@ -81,7 +80,7 @@ services:
       - identity_postgres:/var/lib/postgresql:ro
       - identity_postgres_run:/run/postgresql
       - identity_wal_spool:/var/spool/pgbackrest
-      - /etc/pgbackrest/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+      - /etc/platform/identity/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
       - /etc/platform/identity/secrets/backup:/run/secrets/backup:ro
       - /usr/local/libexec/platform/pgbackrest-sidecar:/opt/platform/pgbackrest-sidecar:ro
       - /etc/platform/identity/pgbackrest-passwd:/etc/passwd:ro
@@ -113,13 +112,12 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    group_add: ["65532"]
     tmpfs:
       - /data:rw,noexec,nosuid,nodev,size=256m
       - /tmp:rw,noexec,nosuid,nodev,size=32m
     volumes:
-      - /etc/platform/identity/secrets/redis:/run/secrets/redis:ro
-      - /etc/platform/identity/tls/redis:/run/tls/redis:ro
+      - /etc/platform/identity/secrets/redis-server:/run/secrets/redis:ro
+      - /etc/platform/identity/tls/redis-server:/run/tls/redis:ro
     command:
       - redis-server
       - --port
@@ -133,7 +131,7 @@ services:
       - --tls-ca-cert-file
       - /run/tls/redis/ca.crt
       - --tls-auth-clients
-      - "yes"
+      - "no"
       - --aclfile
       - /run/secrets/redis/users.acl
       - --maxmemory
@@ -146,7 +144,7 @@ services:
       - ""
     networks: [state]
     healthcheck:
-      test: [CMD-SHELL, REDISCLI_AUTH="$$(cat /run/secrets/redis/bff_password)" redis-cli --tls --user portfolio_bff --cacert /run/tls/redis/ca.crt --cert /run/tls/redis/client.crt --key /run/tls/redis/client.key ping | grep -qx PONG]
+      test: [CMD-SHELL, REDISCLI_AUTH="$$(cat /run/secrets/redis/bff_password)" exec redis-cli --tls --sni redis --user portfolio_bff --cacert /run/tls/redis/ca.crt ping]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -166,21 +164,17 @@ services:
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
-    user: "65532:65532"
+    user: "10001:10001"
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
     volumes:
-      - /etc/platform/identity/secrets/database:/run/secrets/database:ro
-      - /etc/platform/identity/tls/postgres:/run/tls/postgres:ro
+      - /etc/platform/identity/secrets/database/migrator_password:/run/secrets/database/migrator_password:ro
+      - /etc/platform/identity/tls/postgres-client/ca.crt:/run/tls/postgres/ca.crt:ro
+      - /etc/platform/identity/identity-launcher.py:/opt/platform/identity-launcher.py:ro
     environment:
-      DATABASE_HOST: postgres
-      DATABASE_PORT: "5432"
-      DATABASE_NAME: identity
-      DATABASE_USER: identity_migrator
-      DATABASE_PASSWORD_FILE: /run/secrets/database/migrator_password
-      DATABASE_SSLMODE: verify-full
-      DATABASE_SSLROOTCERT: /run/tls/postgres/ca.crt
-    command: [migrate, upgrade, head]
+      PYTHONDONTWRITEBYTECODE: "1"
+    entrypoint: [python, /opt/platform/identity-launcher.py]
+    command: [migrator]
     depends_on:
       postgres: {condition: service_healthy}
     networks: [state]
@@ -196,24 +190,25 @@ services:
     <<: *hardened
     image: $${IDENTITY_API_IMAGE:?immutable Identity API image required}
     platform: linux/arm64
-    user: "65532:65532"
+    user: "10001:10001"
     ports: [127.0.0.1:8081:8080]
     volumes:
-      - /etc/platform/identity/secrets/database:/run/secrets/database:ro
-      - /etc/platform/identity/tls/postgres:/run/tls/postgres:ro
+      - /etc/platform/identity/secrets/database/runtime_password:/run/secrets/database/runtime_password:ro
+      - /etc/platform/identity/tls/postgres-client/ca.crt:/run/tls/postgres/ca.crt:ro
+      - /etc/platform/identity/identity-launcher.py:/opt/platform/identity-launcher.py:ro
     environment:
-      DATABASE_HOST: postgres
-      DATABASE_PORT: "5432"
-      DATABASE_NAME: identity
-      DATABASE_USER: identity_runtime
-      DATABASE_PASSWORD_FILE: /run/secrets/database/runtime_password
-      DATABASE_SSLMODE: verify-full
-      DATABASE_SSLROOTCERT: /run/tls/postgres/ca.crt
+      PLATFORM_COGNITO_ISSUER: $${COGNITO_ISSUER:?Cognito issuer required}
+      PLATFORM_COGNITO_JWKS_URL: $${COGNITO_JWKS_URL:?Cognito JWKS URL required}
+      PLATFORM_COGNITO_CLIENT_ID: $${COGNITO_CLIENT_ID:?Cognito client ID required}
+      IDENTITY_ORIGIN: https://identity.rahuly.in
+      PORT: "8080"
+    entrypoint: [python, /opt/platform/identity-launcher.py]
+    command: [api]
     depends_on:
       postgres: {condition: service_healthy}
     networks: [edge, state]
     healthcheck:
-      test: [CMD, /app/healthcheck, http://127.0.0.1:8080/health/ready]
+      test: [CMD, python, scripts/healthcheck.py]
       interval: 15s
       timeout: 5s
       retries: 8
@@ -230,33 +225,27 @@ services:
     <<: *hardened
     image: $${IDENTITY_BFF_IMAGE:?immutable reference-BFF image required}
     platform: linux/arm64
-    user: "65532:65532"
-    ports: [127.0.0.1:8082:8080]
+    user: "10002:10002"
+    ports: [127.0.0.1:8082:8081]
     volumes:
-      - /etc/platform/identity/secrets/bff:/run/secrets/bff:ro
-      - /etc/platform/identity/secrets/redis:/run/secrets/redis:ro
-      - /etc/platform/identity/tls/redis:/run/tls/redis:ro
+      - /etc/platform/identity/secrets/client/client_secret:/run/secrets/client/client_secret:ro
+      - /etc/platform/identity/secrets/redis-client/bff_password:/run/secrets/redis/bff_password:ro
+      - /etc/platform/identity/tls/redis-client/ca.crt:/run/tls/redis/ca.crt:ro
+      - /etc/platform/identity/identity-launcher.py:/opt/platform/identity-launcher.py:ro
     environment:
-      REDIS_URL: rediss://redis:6379/0
-      REDIS_USERNAME: portfolio_bff
-      REDIS_PASSWORD_FILE: /run/secrets/redis/bff_password
-      REDIS_CA_FILE: /run/tls/redis/ca.crt
-      REDIS_CERT_FILE: /run/tls/redis/client.crt
-      REDIS_KEY_FILE: /run/tls/redis/client.key
-      REDIS_KEY_PREFIX: "portfolio:identity:bff:"
-      COGNITO_CLIENT_SECRET_FILE: /run/secrets/bff/cognito_client_secret
-      BFF_COOKIE_ENCRYPTION_KEY_FILE: /run/secrets/bff/cookie_encryption_key
-      COGNITO_ISSUER: $${COGNITO_ISSUER:?Cognito issuer required}
-      COGNITO_JWKS_URI: $${COGNITO_JWKS_URI:?Cognito JWKS URI required}
-      COGNITO_AUDIENCE: $${COGNITO_AUDIENCE:?Cognito audience required}
-      COGNITO_CLIENT_ID: $${COGNITO_CLIENT_ID:?Cognito client ID required}
-      BFF_ORIGIN: $${BFF_ORIGIN:?portfolio origin required}
+      PLATFORM_COGNITO_ISSUER: $${COGNITO_ISSUER:?Cognito issuer required}
+      PLATFORM_COGNITO_JWKS_URL: $${COGNITO_JWKS_URL:?Cognito JWKS URL required}
+      PLATFORM_COGNITO_CLIENT_ID: $${COGNITO_CLIENT_ID:?Cognito client ID required}
+      BFF_ORIGIN: https://rahuly.in
+      PORT: "8081"
+    entrypoint: [python, /opt/platform/identity-launcher.py]
+    command: [bff]
     depends_on:
       redis: {condition: service_healthy}
       api: {condition: service_healthy}
     networks: [edge, state]
     healthcheck:
-      test: [CMD, /app/healthcheck, http://127.0.0.1:8080/health/ready]
+      test: [CMD, python, scripts/healthcheck.py]
       interval: 15s
       timeout: 5s
       retries: 8

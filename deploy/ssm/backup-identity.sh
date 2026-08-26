@@ -14,6 +14,11 @@ docker compose --file /opt/platform/identity/current/compose.yml --project-name 
 docker compose --file /opt/platform/identity/current/compose.yml --project-name identity-production \
   exec --no-TTY pgbackrest pgbackrest --stanza=identity info --output=json >"/var/lib/platform/identity-backup-$stamp.json"
 chmod 0600 "/var/lib/platform/identity-backup-$stamp.json"
+mapfile -t expired_metadata < <(find /var/lib/platform -maxdepth 1 -type f -name 'identity-backup-*.json' -printf '%T@ %p\n' | sort -nr | awk 'NR > 14 {sub(/^[^ ]+ /, ""); print}')
+for metadata_file in "${expired_metadata[@]}"; do
+  [[ "$metadata_file" == /var/lib/platform/identity-backup-*.json ]]
+  rm -f -- "$metadata_file"
+done
 docker compose --file /opt/platform/identity/current/compose.yml --project-name identity-production \
   exec --no-TTY pgbackrest touch /var/spool/pgbackrest/.last-backup-success
 readonly metadata_token="$(curl --fail --silent --show-error --max-time 3 --request PUT \

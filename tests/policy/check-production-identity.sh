@@ -69,7 +69,7 @@ done
 for input in identity_api_image identity_bff_image identity_api_image_platform identity_bff_image_platform \
   identity_auth_certificate_arn identity_cognito_issuer identity_cognito_jwks_uri \
   identity_cognito_audience identity_cognito_client_id identity_bff_origin identity_github_owner_id \
-  identity_github_repository_id identity_bff_client_secret_arn identity_bff_runtime_secret_arn \
+  identity_github_repository_id identity_bff_client_secret_arn \
   identity_database_secret_arn identity_redis_secret_arn identity_backup_secret_arn; do
   require_count 1 "^[[:space:]]*$input[[:space:]]*=[[:space:]]*null[[:space:]]*$" "$runtime_values" \
     "committed runtime activation references must remain null"
@@ -89,7 +89,7 @@ require_fixed "$runtime_variables" 'var.identity_api_image_platform == "linux/ar
   "the runtime must require an API ARM64 proof"
 require_fixed "$runtime_variables" 'var.identity_bff_image_platform == "linux/arm64"' \
   "the runtime must require a BFF ARM64 proof"
-require_fixed "$runtime_variables" 'var.identity_redis_namespace == "portfolio:identity:bff:"' \
+require_fixed "$runtime_variables" 'var.identity_redis_namespace == "reference-bff:production:portfolio:identity"' \
   "the runtime must retain the exact disposable Redis namespace"
 
 require_count 1 '^[[:space:]]*resource "aws_acm_certificate" "auth"' "$authentication" \
@@ -142,6 +142,8 @@ reject '(AdministratorAccess|secretsmanager:[*])' "$production_module/iam.tf" \
   "Identity IAM must not contain administrative or wildcard secret permissions"
 require_fixed "$production_module/variables.tf" '!strcontains(lower(arn), "google")' \
   "the host secret contract must reject Google credentials"
+require_fixed "$production_module/variables.tf" 'length(var.runtime_secret_arns) == 4' \
+  "the host must read exactly four purpose-bound runtime secrets"
 require_fixed "$production_module/iam.tf" 'values   = ["identity/production/*"]' \
   "the host backup ListBucket permission must remain prefix-scoped"
 
@@ -158,13 +160,17 @@ jq -e '
 reject '(:latest|image:[[:space:]]+[^#[:space:]]+:[A-Za-z0-9])' "$compose" \
   "Compose source must not use mutable image tags"
 require_fixed "$compose" 'ports: [127.0.0.1:8081:8080]' "the API must bind only to loopback"
-require_fixed "$compose" 'ports: [127.0.0.1:8082:8080]' "the BFF must bind only to loopback"
+require_fixed "$compose" 'ports: [127.0.0.1:8082:8081]' "the BFF must bind only to its published loopback port"
 reject 'ports:.*(5432|6379)|/var/run/docker.sock|/run/docker.sock' "$compose" \
   "state ports and the Docker socket must not be published or mounted"
-require_fixed "$compose" 'DATABASE_SSLMODE: verify-full' "PostgreSQL clients must require verify-full TLS"
-require_fixed "$compose" 'REDIS_URL: rediss://redis:6379/0' "the BFF must require Redis TLS"
-require_fixed "$compose" 'REDIS_KEY_PREFIX: "portfolio:identity:bff:"' "Redis must remain exactly namespaced"
-require_fixed "$compose" 'BFF_COOKIE_ENCRYPTION_KEY_FILE: /run/secrets/bff/cookie_encryption_key' "the BFF must retain its dedicated cookie key reference"
+require_fixed config/runtime/identity-launcher.py 'sslmode=verify-full&sslrootcert=/run/tls/postgres/ca.crt' \
+  "the launcher must construct the exact verify-full PostgreSQL URL"
+require_fixed config/runtime/identity-launcher.py 'rediss://portfolio_bff:{encoded}@redis:6379/0' \
+  "the launcher must construct the exact authenticated Redis TLS URL"
+require_fixed config/runtime/identity-launcher.py 'REDIS_NAMESPACE = "reference-bff:production:portfolio:identity"' \
+  "Redis must remain exactly namespaced"
+reject '(BFF_COOKIE_ENCRYPTION_KEY_FILE|cookie_encryption|identity_bff_runtime_secret_arn)' "$compose" \
+  "the unused BFF cookie-secret contract must remain absent"
 reject '(BFF_COOKIE_DOMAIN|SESSION_COOKIE_DOMAIN|COOKIE_DOMAIN):' "$compose" \
   "the BFF must not configure a shared cookie domain"
 require_fixed "$compose" '--appendonly' "Redis persistence must remain explicitly disabled"
@@ -188,19 +194,23 @@ require_count 5 '^[[:space:]]*cap_drop:[[:space:]]*\[ALL\]' "$compose" \
 
 require_count 1 '^[[:space:]]*location \^~ /auth/ \{' "$nginx" "the apex must have one BFF auth route"
 require_count 1 '^[[:space:]]*location \^~ /api/ \{' "$nginx" "the apex must have one BFF API route"
-require_count 1 '^[[:space:]]*server_name identity[.]\$\{base_domain\};' "$nginx" \
-  "the dedicated Identity API virtual host must remain exact"
+require_count 2 '^[[:space:]]*server_name identity[.]\$\{base_domain\};' "$nginx" \
+  "the dedicated Identity API HTTP and HTTPS virtual hosts must remain exact"
 reject 'server_name[[:space:]]+auth[.]|proxy_pass[^;]*auth[.]' "$nginx" \
   "auth DNS must never terminate at or proxy through Nginx"
 require_fixed "$nginx" 'return 308 https://${base_domain}$request_uri;' \
   "canonical redirects must preserve path and query"
+require_fixed "$nginx" 'return 308 https://identity.${base_domain}$request_uri;' \
+  "Identity HTTP redirects must preserve the Identity host"
 
 for operation in configure deploy tls verify rollback backup restore; do
   require_fixed "$production_module/documents.tf" "$operation" \
     "every fixed Identity operation document must remain present"
 done
 require_fixed deploy/ssm/deploy-identity.sh 'run --rm migrator' "migration must precede activation"
-require_fixed deploy/ssm/deploy-identity.sh 'migrator check' "deployment must reject migration drift"
+require_fixed deploy/ssm/deploy-identity.sh '0001_initial_identity_schema' "deployment must require the exact migration head"
+reject 'migrator check|command: \[migrate' deploy/ssm/deploy-identity.sh \
+  "deployment must not invoke nonexistent migration commands"
 require_fixed deploy/ssm/backup-identity.sh 'pgbackrest' "backup must use pgBackRest"
 require_fixed deploy/ssm/restore-identity.sh 'identity-restore-rehearsal' \
   "restore must target an isolated rehearsal directory"
@@ -212,6 +222,12 @@ require_fixed deploy/ssm/verify-identity.sh 'Dimensions=[{Name=InstanceId' \
   "Identity verification metrics must match the alarm InstanceId dimension"
 require_count 1 '^[[:space:]]*resource "aws_cloudwatch_metric_alarm" "identity"' "$production_module/monitoring.tf" \
   "Identity alarms must extend the existing monitoring module"
+require_fixed "$production_module/monitoring.tf" 'for_each = var.enable_runtime ? local.identity_alarms : {}' \
+  "Identity alarms must remain runtime-gated"
+require_fixed "$production_module/monitoring.tf" 'alarm_actions       = [var.alarm_topic_arn]' \
+  "Identity alarms must notify the existing alarm topic"
+require_fixed "$production_module/monitoring.tf" 'treat_missing_data  = "breaching"' \
+  "a stopped verifier must not appear healthy"
 require_count 8 '^[[:space:]]*resource "aws_cloudwatch_metric_alarm"' infra/modules/monitoring/alarms.tf \
   "the existing eight portfolio alarms must remain intact"
 
@@ -219,4 +235,6 @@ if ((failures > 0)); then
   printf 'Production Identity policy checks failed with %d contract violation(s).\n' "$failures" >&2
   exit 1
 fi
+python3 tests/runtime/verify-identity-contract.py . >/dev/null || fail "the executable Identity runtime contract must pass"
+((failures == 0)) || exit 1
 printf 'Production Identity policy checks passed.\n'

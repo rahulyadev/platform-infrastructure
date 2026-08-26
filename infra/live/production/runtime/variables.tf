@@ -207,7 +207,6 @@ variable "enable_identity_delivery_foundation" {
       var.identity_github_owner_id != null &&
       var.identity_github_repository_id != null &&
       var.identity_bff_client_secret_arn != null &&
-      var.identity_bff_runtime_secret_arn != null &&
       var.identity_database_secret_arn != null &&
       var.identity_redis_secret_arn != null &&
       var.identity_backup_secret_arn != null
@@ -226,6 +225,8 @@ variable "enable_identity_production_runtime" {
       var.enable_identity_delivery_foundation &&
       var.identity_api_image != null &&
       var.identity_bff_image != null &&
+      startswith(var.identity_api_image, format("%s.dkr.ecr.%s.amazonaws.com/%s-%s-identity-api@sha256:", var.expected_account_id, var.aws_region, var.project_name, var.environment)) &&
+      startswith(var.identity_bff_image, format("%s.dkr.ecr.%s.amazonaws.com/%s-%s-identity-bff@sha256:", var.expected_account_id, var.aws_region, var.project_name, var.environment)) &&
       var.identity_api_image_platform == "linux/arm64" &&
       var.identity_bff_image_platform == "linux/arm64" &&
       var.identity_auth_certificate_arn != null &&
@@ -234,7 +235,7 @@ variable "enable_identity_production_runtime" {
       var.identity_cognito_audience == "identity-service://api" &&
       var.identity_cognito_client_id != null &&
       var.identity_bff_origin == "https://rahuly.in" &&
-      var.identity_redis_namespace == "portfolio:identity:bff:"
+      var.identity_redis_namespace == "reference-bff:production:portfolio:identity"
     )
     error_message = "enable_identity_production_runtime requires delivery, ARM64 image proofs, every reviewed authentication reference, the exact portfolio origin, and the exact Redis namespace."
   }
@@ -266,6 +267,11 @@ variable "identity_cognito_issuer" {
   type        = string
   default     = null
   nullable    = true
+
+  validation {
+    condition     = var.identity_cognito_issuer == null || can(regex("^https://cognito-idp[.]ap-south-1[.]amazonaws[.]com/ap-south-1_[A-Za-z0-9]+$", var.identity_cognito_issuer))
+    error_message = "identity_cognito_issuer must be null or the exact ap-south-1 regional issuer."
+  }
 }
 
 variable "identity_cognito_jwks_uri" {
@@ -280,6 +286,11 @@ variable "identity_cognito_audience" {
   type        = string
   default     = null
   nullable    = true
+
+  validation {
+    condition     = var.identity_cognito_audience == null || var.identity_cognito_audience == "identity-service://api"
+    error_message = "identity_cognito_audience must be null or the exact Identity resource identifier."
+  }
 }
 
 variable "identity_cognito_client_id" {
@@ -287,6 +298,11 @@ variable "identity_cognito_client_id" {
   type        = string
   default     = null
   nullable    = true
+
+  validation {
+    condition     = var.identity_cognito_client_id == null || can(regex("^[a-z0-9]{26}$", var.identity_cognito_client_id))
+    error_message = "identity_cognito_client_id must be null or an exact Cognito client identifier."
+  }
 }
 
 variable "identity_bff_origin" {
@@ -294,12 +310,22 @@ variable "identity_bff_origin" {
   type        = string
   default     = null
   nullable    = true
+
+  validation {
+    condition     = var.identity_bff_origin == null || var.identity_bff_origin == "https://rahuly.in"
+    error_message = "identity_bff_origin must be null or the exact production apex origin."
+  }
 }
 
 variable "identity_redis_namespace" {
   description = "Exact BFF-only disposable Redis namespace."
   type        = string
-  default     = "portfolio:identity:bff:"
+  default     = "reference-bff:production:portfolio:identity"
+
+  validation {
+    condition     = var.identity_redis_namespace == "reference-bff:production:portfolio:identity"
+    error_message = "identity_redis_namespace must remain the exact published BFF namespace."
+  }
 }
 
 variable "identity_api_image" {
@@ -367,13 +393,6 @@ variable "identity_bff_client_secret_arn" {
 
 variable "identity_database_secret_arn" {
   description = "Identity database credential secret ARN; null until separately provisioned."
-  type        = string
-  default     = null
-  nullable    = true
-}
-
-variable "identity_bff_runtime_secret_arn" {
-  description = "Reference-BFF runtime cookie/session secret ARN; null until separately provisioned."
   type        = string
   default     = null
   nullable    = true

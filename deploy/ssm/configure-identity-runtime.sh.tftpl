@@ -10,23 +10,38 @@ readonly compose_version='${compose_version}'
 readonly compose_sha256='${compose_binary_sha256}'
 readonly pgbackrest_version='${pgbackrest_version}'
 readonly pgbackrest_sha256='${pgbackrest_tar_sha256}'
-readonly bff_client_secret_arn='${bff_client_secret_arn}'
-readonly bff_runtime_secret_arn='${bff_runtime_secret_arn}'
+readonly client_secret_arn='${bff_client_secret_arn}'
 readonly database_secret_arn='${database_secret_arn}'
 readonly redis_secret_arn='${redis_secret_arn}'
 readonly backup_secret_arn='${backup_secret_arn}'
 readonly work_root=/var/lib/platform/identity-install
+readonly generation_root=/etc/platform/identity-generations
+readonly generation="$generation_root/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+activated=false
 
 fail() {
-  rm -f -- "$work_root/secret.json" "$work_root/secret.stderr" "$work_root/download.stderr" "$work_root"/*.part
+  find "$work_root" -maxdepth 1 -type f -delete >/dev/null 2>&1 || true
+  rm -rf -- "$work_root/docker" >/dev/null 2>&1 || true
+  if [[ "$activated" == false ]]; then
+    rm -rf -- "$generation" >/dev/null 2>&1 || true
+  fi
   printf 'Identity runtime configuration failed safely.\n' >&2
   exit 1
 }
 trap fail ERR
 
-install -d -m 0700 "$work_root"
+if [[ -e "$work_root" || -L "$work_root" ]]; then
+  [[ -d "$work_root" && ! -L "$work_root" && "$(stat -c '%a:%u:%g' "$work_root")" == 700:0:0 ]]
+else
+  install -d -m 0700 "$work_root"
+fi
+find "$work_root" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+if [[ -e "$generation_root" || -L "$generation_root" ]]; then
+  [[ -d "$generation_root" && ! -L "$generation_root" && "$(stat -c '%a:%u:%g' "$generation_root")" == 700:0:0 ]]
+else
+  install -d -m 0700 "$generation_root"
+fi
 install -d -m 0755 /opt/platform/identity/releases /usr/local/lib/docker/cli-plugins /usr/local/libexec/platform /etc/pgbackrest
-install -d -m 0750 -o root -g 65532 /etc/platform/identity/secrets/{bff,database,postgres,redis,backup} /etc/platform/identity/tls/{postgres,redis}
 
 download_verified() {
   local url="$1"
@@ -44,12 +59,16 @@ tar --extract --gzip --file "$work_root/docker.tgz" --directory "$work_root"
 for binary in containerd containerd-shim-runc-v2 ctr docker dockerd docker-init docker-proxy runc; do
   install -m 0755 "$work_root/docker/$binary" "/usr/local/bin/$binary"
 done
-
 download_verified "https://github.com/docker/compose/releases/download/v$${compose_version}/docker-compose-linux-aarch64" "$compose_sha256" "$work_root/docker-compose"
 install -m 0755 "$work_root/docker-compose" /usr/local/lib/docker/cli-plugins/docker-compose
-
 download_verified "https://github.com/pgbackrest/pgbackrest/releases/download/release%2F$${pgbackrest_version}/pgbackrest-$${pgbackrest_version}.tar.gz" "$pgbackrest_sha256" "$work_root/pgbackrest.tar.gz"
 install -m 0644 "$work_root/pgbackrest.tar.gz" "/opt/platform/identity/pgbackrest-$${pgbackrest_version}.tar.gz"
+
+install -d -m 0755 "$generation" "$generation/secrets" "$generation/tls"
+install -d -m 0750 -o root -g 10002 "$generation/secrets/client" "$generation/secrets/redis-client" "$generation/tls/redis-client"
+install -d -m 0750 -o root -g 10001 "$generation/secrets/database" "$generation/tls/postgres-client"
+install -d -m 0750 -o root -g 999 "$generation/secrets/redis-server" "$generation/tls/redis-server" "$generation/tls/postgres-server"
+install -d -m 0750 -o root -g 65532 "$generation/secrets/backup"
 
 write_b64() {
   local encoded="$1"
@@ -61,110 +80,168 @@ write_b64() {
   mv -f -- "$temporary" "$destination"
 }
 
-write_b64 '${compose_b64}' /opt/platform/identity/compose.yml 0644
-write_b64 '${nginx_b64}' /etc/nginx/conf.d/identity-runtime.conf.staged 0644
-write_b64 '${pgbackrest_b64}' /etc/pgbackrest/pgbackrest.conf 0600
-chown root:65532 /etc/pgbackrest/pgbackrest.conf
-chmod 0440 /etc/pgbackrest/pgbackrest.conf
-write_b64 '${systemd_unit_b64}' /etc/systemd/system/identity-stack.service 0644
-write_b64 '${postgres_roles_b64}' /opt/platform/identity/postgres-roles.sql 0600
-write_b64 '${postgres_hba_b64}' /etc/platform/identity/postgres-hba.conf 0644
-write_b64 '${verify_release_b64}' /usr/local/libexec/platform/identity-verify-release 0755
-write_b64 '${health_verify_b64}' /usr/local/libexec/platform/identity-health-verify 0755
-write_b64 '${pgbackrest_sidecar_b64}' /usr/local/libexec/platform/pgbackrest-sidecar 0755
-write_b64 '${docker_service_b64}' /etc/systemd/system/docker.service 0644
-write_b64 '${pgbackrest_passwd_b64}' /etc/platform/identity/pgbackrest-passwd 0644
-
-extract_secret_field() {
-  local source_file="$1"
-  local field="$2"
-  local destination="$3"
-  python3 - "$source_file" "$field" "$destination" <<'PY'
-import json
-import os
-import sys
-source, field, destination = sys.argv[1:]
-with open(source, "r", encoding="utf-8") as handle:
-    value = json.load(handle).get(field)
-if not isinstance(value, str) or not value:
-    raise SystemExit(2)
-temporary = destination + ".tmp"
-descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o440)
-os.fchown(descriptor, 0, 65532)
-with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
-    handle.write(value)
-os.replace(temporary, destination)
-PY
-}
+write_b64 '${compose_b64}' "$generation/compose.yml" 0644
+write_b64 '${nginx_b64}' "$generation/identity-runtime.conf.staged" 0644
+write_b64 '${pgbackrest_b64}' "$generation/pgbackrest.conf" 0440
+chown root:65532 "$generation/pgbackrest.conf"
+write_b64 '${postgres_roles_b64}' "$generation/postgres-roles.sql" 0600
+write_b64 '${postgres_hba_b64}' "$generation/postgres-hba.conf" 0644
+write_b64 '${pgbackrest_passwd_b64}' "$generation/pgbackrest-passwd" 0644
+write_b64 '${launcher_b64}' "$generation/identity-launcher.py" 0555
 
 fetch_secret() {
   local secret_arn="$1"
-  local capture="$work_root/secret.json"
+  local destination="$2"
   [[ -n "$secret_arn" ]]
-  aws secretsmanager get-secret-value --region ap-south-1 --secret-id "$secret_arn" --version-stage AWSCURRENT --query SecretString --output text >"$capture" 2>"$work_root/secret.stderr"
-  chmod 0600 "$capture"
-  printf '%s' "$capture"
+  aws secretsmanager get-secret-value --region ap-south-1 --secret-id "$secret_arn" --version-stage AWSCURRENT --query SecretString --output text >"$destination" 2>"$work_root/secret.stderr"
+  chmod 0600 "$destination"
+  : >"$work_root/secret.stderr"
 }
+fetch_secret "$client_secret_arn" "$work_root/client.json"
+fetch_secret "$database_secret_arn" "$work_root/database.json"
+fetch_secret "$redis_secret_arn" "$work_root/redis.json"
+fetch_secret "$backup_secret_arn" "$work_root/backup.json"
 
-capture="$(fetch_secret "$bff_client_secret_arn")"
-extract_secret_field "$capture" client_secret /etc/platform/identity/secrets/bff/cognito_client_secret
-: >"$capture"
-capture="$(fetch_secret "$bff_runtime_secret_arn")"
-extract_secret_field "$capture" cookie_encryption_key /etc/platform/identity/secrets/bff/cookie_encryption_key
-: >"$capture"
-capture="$(fetch_secret "$database_secret_arn")"
-extract_secret_field "$capture" bootstrap_password /etc/platform/identity/secrets/postgres/bootstrap_password
-for field in migrator_password runtime_password; do
-  extract_secret_field "$capture" "$field" "/etc/platform/identity/secrets/database/$field"
-done
-extract_secret_field "$capture" postgres_ca_crt /etc/platform/identity/tls/postgres/ca.crt
-extract_secret_field "$capture" postgres_server_crt /etc/platform/identity/tls/postgres/server.crt
-extract_secret_field "$capture" postgres_server_key /etc/platform/identity/tls/postgres/server.key
-python3 - /etc/platform/identity/secrets/postgres/bootstrap_password /etc/platform/identity/secrets/database/bootstrap.pgpass <<'PY'
-import os
-import sys
-with open(sys.argv[1], "r", encoding="utf-8") as handle:
-    password = handle.read()
-if not password or "\n" in password or "\r" in password:
-    raise SystemExit(2)
-password = password.replace("\\", "\\\\").replace(":", "\\:")
-temporary = sys.argv[2] + ".tmp"
-descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o440)
-os.fchown(descriptor, 0, 65532)
-with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-    handle.write(f"postgres:5432:identity:identity_bootstrap:{password}\n")
-os.replace(temporary, sys.argv[2])
-PY
-: >"$capture"
-capture="$(fetch_secret "$redis_secret_arn")"
-extract_secret_field "$capture" bff_password /etc/platform/identity/secrets/redis/bff_password
-extract_secret_field "$capture" redis_ca_crt /etc/platform/identity/tls/redis/ca.crt
-extract_secret_field "$capture" redis_server_crt /etc/platform/identity/tls/redis/server.crt
-extract_secret_field "$capture" redis_server_key /etc/platform/identity/tls/redis/server.key
-extract_secret_field "$capture" redis_client_crt /etc/platform/identity/tls/redis/client.crt
-extract_secret_field "$capture" redis_client_key /etc/platform/identity/tls/redis/client.key
-python3 - "$capture" /etc/platform/identity/secrets/redis/users.acl <<'PY'
+python3 - "$work_root" "$generation" 2>"$work_root/secret.stderr" <<'PY'
 import json
 import os
+import pathlib
+import re
 import sys
-with open(sys.argv[1], "r", encoding="utf-8") as handle:
-    password = json.load(handle).get("bff_password")
-if not isinstance(password, str) or not password or any(character.isspace() for character in password):
-    raise SystemExit(2)
-content = f"user default off\nuser portfolio_bff on >{password} ~portfolio:identity:bff:* +@read +@write -@dangerous\n"
-temporary = sys.argv[2] + ".tmp"
-descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o440)
-os.fchown(descriptor, 0, 65532)
-with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-    handle.write(content)
-os.replace(temporary, sys.argv[2])
-PY
-: >"$capture"
-capture="$(fetch_secret "$backup_secret_arn")"
-extract_secret_field "$capture" repository_cipher /etc/platform/identity/secrets/backup/repository_cipher
-: >"$capture"
 
-rm -f -- "$work_root/secret.json" "$work_root/secret.stderr" "$work_root/download.stderr"
+work = pathlib.Path(sys.argv[1])
+generation = pathlib.Path(sys.argv[2])
+schemas = {
+    "client": {"client_secret"},
+    "database": {"bootstrap_password", "migrator_password", "runtime_password", "postgres_ca_crt", "postgres_server_crt", "postgres_server_key"},
+    "redis": {"bff_password", "redis_ca_crt", "redis_server_crt", "redis_server_key"},
+    "backup": {"repository_cipher"},
+}
+
+def no_duplicates(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate")
+        result[key] = value
+    return result
+
+objects = {}
+for name, fields in schemas.items():
+    with (work / f"{name}.json").open("r", encoding="utf-8") as handle:
+        value = json.load(handle, object_pairs_hook=no_duplicates)
+    if not isinstance(value, dict) or set(value) != fields:
+        raise SystemExit(2)
+    if any(not isinstance(item, str) or not item for item in value.values()):
+        raise SystemExit(2)
+    objects[name] = value
+
+for name, fields in (
+    ("database", ("postgres_ca_crt", "postgres_server_crt", "postgres_server_key")),
+    ("redis", ("redis_ca_crt", "redis_server_crt", "redis_server_key")),
+):
+    for field in fields:
+        encoded = objects[name][field].encode("ascii", "strict")
+        if not 256 <= len(encoded) <= 32768 or b"\r" in encoded or b"\x00" in encoded:
+            raise SystemExit(2)
+
+credential = re.compile(r"[A-Za-z0-9!#$%&()*+,./:;<=>?@\[\]^_`{|}~-]{32,256}")
+for name, field in (("client", "client_secret"), ("database", "bootstrap_password"), ("database", "migrator_password"), ("database", "runtime_password"), ("redis", "bff_password"), ("backup", "repository_cipher")):
+    if not credential.fullmatch(objects[name][field]):
+        raise SystemExit(2)
+
+def write(relative, value, gid, mode=0o440):
+    target = generation / relative
+    descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    os.fchown(descriptor, 0, gid)
+    os.fchmod(descriptor, mode)
+    with os.fdopen(descriptor, "w", encoding="ascii", newline="") as stream:
+        stream.write(value)
+
+write("secrets/client/client_secret", objects["client"]["client_secret"], 10002)
+for field in ("bootstrap_password", "migrator_password", "runtime_password"):
+    write(f"secrets/database/{field}", objects["database"][field], 10001)
+for field, output in (("postgres_ca_crt", "ca.crt"), ("postgres_server_crt", "server.crt"), ("postgres_server_key", "server.key")):
+    write(f"tls/postgres-server/{output}", objects["database"][field], 999)
+write("tls/postgres-client/ca.crt", objects["database"]["postgres_ca_crt"], 10001)
+write("secrets/redis-server/bff_password", objects["redis"]["bff_password"], 999)
+write("secrets/redis-client/bff_password", objects["redis"]["bff_password"], 10002)
+for field, output in (("redis_ca_crt", "ca.crt"), ("redis_server_crt", "server.crt"), ("redis_server_key", "server.key")):
+    write(f"tls/redis-server/{output}", objects["redis"][field], 999)
+write("tls/redis-client/ca.crt", objects["redis"]["redis_ca_crt"], 10002)
+write("secrets/backup/repository_cipher", objects["backup"]["repository_cipher"], 65532)
+escaped = objects["database"]["bootstrap_password"].replace("\\", "\\\\").replace(":", "\\:")
+write("secrets/database/bootstrap.pgpass", f"postgres:5432:identity:identity_bootstrap:{escaped}\n", 10001)
+acl = "user default off\n" + f"user portfolio_bff reset on >{objects['redis']['bff_password']} " + "~reference-bff:production:portfolio:identity:* +ping +get +set +getdel +del +eval +client|setinfo\n"
+write("secrets/redis-server/users.acl", acl, 999)
+PY
+
+validate_server_identity() {
+  local directory="$1"
+  local hostname="$2"
+  openssl x509 -in "$directory/ca.crt" -noout >/dev/null 2>&1
+  openssl x509 -in "$directory/ca.crt" -noout -ext basicConstraints >"$work_root/ca-basic" 2>/dev/null
+  openssl x509 -in "$directory/ca.crt" -noout -ext keyUsage >"$work_root/ca-usage" 2>/dev/null
+  grep -Fq 'CA:TRUE' "$work_root/ca-basic"
+  grep -Fq 'Certificate Sign' "$work_root/ca-usage"
+  openssl x509 -in "$directory/server.crt" -noout >/dev/null 2>&1
+  openssl pkey -in "$directory/server.key" -noout >/dev/null 2>&1
+  openssl verify -CAfile "$directory/ca.crt" "$directory/server.crt" >/dev/null 2>&1
+  openssl x509 -in "$directory/server.crt" -checkhost "$hostname" -noout >/dev/null 2>&1
+  openssl x509 -in "$directory/server.crt" -purpose -noout 2>/dev/null | grep -Fxq 'SSL server : Yes'
+  openssl x509 -in "$directory/server.crt" -noout -ext subjectAltName >"$work_root/san" 2>/dev/null
+  openssl x509 -in "$directory/server.crt" -noout -ext extendedKeyUsage >"$work_root/eku" 2>/dev/null
+  python3 - "$work_root/san" "$work_root/eku" "$hostname" 2>"$work_root/secret.stderr" <<'PY'
+import pathlib
+import re
+import sys
+san = pathlib.Path(sys.argv[1]).read_text(encoding="ascii")
+eku = pathlib.Path(sys.argv[2]).read_text(encoding="ascii")
+if re.findall(r"DNS:([^,\s]+)", san) != [sys.argv[3]] or "IP Address:" in san:
+    raise SystemExit(2)
+purposes = [item.strip() for item in eku.splitlines()[1:] if item.strip()]
+if purposes != ["TLS Web Server Authentication"]:
+    raise SystemExit(2)
+PY
+  openssl x509 -in "$directory/server.crt" -pubkey -noout 2>/dev/null | sha256sum | cut -d' ' -f1 >"$work_root/cert.pub"
+  openssl pkey -in "$directory/server.key" -pubout 2>/dev/null | sha256sum | cut -d' ' -f1 >"$work_root/key.pub"
+  cmp -s "$work_root/cert.pub" "$work_root/key.pub"
+}
+validate_server_identity "$generation/tls/postgres-server" postgres
+validate_server_identity "$generation/tls/redis-server" redis
+
+write_b64 '${systemd_unit_b64}' "$work_root/identity-stack.service" 0644
+write_b64 '${verify_release_b64}' "$work_root/identity-verify-release" 0755
+write_b64 '${health_verify_b64}' "$work_root/identity-health-verify" 0755
+write_b64 '${pgbackrest_sidecar_b64}' "$work_root/pgbackrest-sidecar" 0755
+write_b64 '${docker_service_b64}' "$work_root/docker.service" 0644
+install -m 0644 "$work_root/identity-stack.service" /etc/systemd/system/identity-stack.service
+install -m 0644 "$work_root/docker.service" /etc/systemd/system/docker.service
+install -m 0755 "$work_root/identity-verify-release" /usr/local/libexec/platform/identity-verify-release
+install -m 0755 "$work_root/identity-health-verify" /usr/local/libexec/platform/identity-health-verify
+install -m 0755 "$work_root/pgbackrest-sidecar" /usr/local/libexec/platform/pgbackrest-sidecar
+
+rm -f -- "$work_root"/*.json "$work_root"/*.stderr "$work_root"/*.pub "$work_root"/san "$work_root"/eku "$work_root"/ca-basic "$work_root"/ca-usage
 systemctl daemon-reload
-systemctl enable --now docker.service
-printf 'Identity runtime source configured; no workload was started.\n'
+systemctl enable docker.service identity-stack.service
+systemctl start docker.service
+[[ "$(systemctl is-enabled identity-stack.service)" == enabled ]]
+! systemctl is-active --quiet identity-stack.service
+current_generation=""
+if [[ -L /etc/platform/identity ]]; then
+  current_generation="$(readlink -f -- /etc/platform/identity)"
+  [[ "$current_generation" == "$generation_root"/* ]]
+fi
+while IFS= read -r obsolete_generation; do
+  [[ "$obsolete_generation" == "$generation_root"/* ]]
+  [[ "$obsolete_generation" != "$current_generation" && "$obsolete_generation" != "$generation" ]]
+  rm -rf -- "$obsolete_generation"
+done < <(find "$generation_root" -mindepth 1 -maxdepth 1 -type d -print)
+find "$work_root" -maxdepth 1 -type f -delete
+rm -rf -- "$work_root/docker"
+rm -f -- /etc/platform/.identity.next
+ln -s "identity-generations/$(basename -- "$generation")" /etc/platform/.identity.next
+mv -Tf -- /etc/platform/.identity.next /etc/platform/identity
+activated=true
+trap - ERR
+printf 'Identity runtime source configured transactionally; no workload was started.\n'

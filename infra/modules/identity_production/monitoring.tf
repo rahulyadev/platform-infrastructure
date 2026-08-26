@@ -33,18 +33,21 @@ resource "aws_cloudwatch_log_group" "identity" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "identity" {
-  for_each = local.identity_alarms
+  for_each = var.enable_runtime ? local.identity_alarms : {}
 
   alarm_name          = "${var.name_prefix}-${replace(each.key, "_", "-")}"
   alarm_description   = "Identity production recovery signal: ${each.value}."
   namespace           = "PlatformInfrastructure/Production/Identity"
   metric_name         = each.value
   statistic           = "Maximum"
-  period              = 300
-  evaluation_periods  = 1
+  period              = 1800
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
   threshold           = 0
   comparison_operator = "GreaterThanThreshold"
-  treat_missing_data  = "notBreaching"
+  treat_missing_data  = "breaching"
+  alarm_actions       = [var.alarm_topic_arn]
+  ok_actions          = [var.alarm_topic_arn]
 
   dimensions = {
     InstanceId = var.instance_id

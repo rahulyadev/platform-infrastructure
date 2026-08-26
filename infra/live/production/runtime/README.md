@@ -21,10 +21,13 @@ defaults to absent. Its foundation defines exactly two immutable, scanned,
 encrypted ECR repositories; an exact `rahulyadev/identity-service` protected-
 environment OIDC role; scoped host ECR/secret/backup/logging permissions; fixed
 configure, Identity TLS, migrate/deploy, verify, rollback, backup, and restore documents; and
-additive Identity log groups/alarms. The runtime gate additionally requires
+additive log groups. Exactly thirteen actionable alarms appear only with the runtime gate. The
+runtime gate additionally requires
 immutable API/BFF digests with `linux/arm64` proofs, every reviewed non-secret
 authentication reference, the exact portfolio origin, and the exact Redis
-namespace. Committed images, secret references, endpoints, and both gates stay
+namespace `reference-bff:production:portfolio:identity`. The host secret set is exactly Cognito
+client custody, database/TLS, Redis server-TLS/ACL, and backup encryption. Committed images,
+secret references, endpoints, and both gates stay
 null/false, so the module has no planned resources in the checkpoint plan.
 
 ```bash

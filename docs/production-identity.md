@@ -39,25 +39,27 @@ hop-limit of one remains unchanged while the AWS SDK obtains the host role. Post
 only through the mounted administrative socket. Every service uses the host-role CloudWatch Logs
 driver and an exact gated log group.
 
-Secret values are never committed. Future secret schemas are names only:
+Secret values are never committed. The four host-readable secret schemas are names only:
 
 - Cognito custody: `client_secret`.
-- BFF runtime: `cookie_encryption_key`.
 - Database/internal TLS: `bootstrap_password`, `migrator_password`, `runtime_password`,
   `postgres_ca_crt`, `postgres_server_crt`, and `postgres_server_key`.
-- Redis/internal TLS: `bff_password`, `redis_ca_crt`, `redis_server_crt`, `redis_server_key`,
-  `redis_client_crt`, and `redis_client_key`.
+- Redis/internal TLS: `bff_password`, `redis_ca_crt`, `redis_server_crt`, and
+  `redis_server_key`.
 - Backup: `repository_cipher`.
 - Google OAuth: `client_id` and `client_secret`; never host-readable.
 
 Secrets are fetched only by exact ARN in the fixed configure document, captured without tracing,
-and atomically installed as root-owned, service-group-readable files. PostgreSQL clients require
-TCP with `sslmode=verify-full`. The BFF requires `rediss://`, mutual TLS, ACL user
-`portfolio_bff`, and exact key prefix `portfolio:identity:bff:`.
+validated together with duplicate-key rejection, and activated through one atomic generation
+symlink as root-owned, single-service-group-readable files. PostgreSQL clients require TCP with
+`sslmode=verify-full`. The BFF constructs a process-local public/private CA bundle in tmpfs and
+requires server-authenticated `rediss://` with ACL user `portfolio_bff`, no client certificate,
+and exact key namespace `reference-bff:production:portfolio:identity`.
 
-PostgreSQL has distinct bootstrap, no-login owner, migrator, and runtime roles. The runtime role
-receives only connection, schema usage, table `SELECT`/`INSERT`/`UPDATE`, and sequence usage.
-Migrations must reach the exact head before activation. Redis is BFF-only disposable session and
+PostgreSQL has distinct bootstrap, no-login owner, login `identity_service_migrator`, and login
+`identity_service_app` roles. The published migration script applies exact table and column grants;
+the runtime role receives no destructive, DDL, ownership, or role-escalation permission. Migrations
+must reach exact head `0001_initial_identity_schema` before activation. Redis is BFF-only session and
 OAuth-transaction state, uses TTL-compatible eviction, and has persistence disabled. Redis loss
 invalidates sessions and requires reauthentication; no recovery claim is made. Recovery design is
 deferred to future task `PLATFORM-P4-REDIS-RECOVERY-DESIGN-001`.
@@ -67,7 +69,9 @@ deferred to future task `PLATFORM-P4-REDIS-RECOVERY-DESIGN-001`.
 pgBackRest continuously consumes the PostgreSQL WAL spool into the existing versioned/encrypted
 backup bucket under `identity/production`, with encrypted repository material, weekly full and
 six-day differential schedules, four-full/fourteen-differential retention, freshness metrics, and
-an isolated restore rehearsal operation. EBS/DLM remains crash-consistent host recovery only.
+an isolated restore rehearsal operation. Each rehearsal starts a portless restored PostgreSQL,
+checks the exact head and deterministic content, and removes its container and private directory.
+EBS/DLM remains crash-consistent host recovery only.
 
 The design objectives are RPO no greater than 24 hours and RTO no greater than 4 hours. They are
 objectives pending live activation and repeated restore evidence, not achieved guarantees.

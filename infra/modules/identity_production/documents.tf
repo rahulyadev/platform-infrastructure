@@ -1,4 +1,18 @@
 locals {
+  identity_api_repository_url = aws_ecr_repository.identity["${var.name_prefix}-identity-api"].repository_url
+  identity_bff_repository_url = aws_ecr_repository.identity["${var.name_prefix}-identity-bff"].repository_url
+  identity_ecr_registry       = split("/", local.identity_api_repository_url)[0]
+
+  rendered_document_scripts = {
+    for key, script in var.document_scripts : key => replace(
+      replace(
+        replace(script, "__IDENTITY_API_REPOSITORY_URL__", local.identity_api_repository_url),
+        "__IDENTITY_BFF_REPOSITORY_URL__", local.identity_bff_repository_url
+      ),
+      "__IDENTITY_ECR_REGISTRY__", local.identity_ecr_registry
+    )
+  }
+
   document_names = {
     configure = "${var.name_prefix}-configure-identity-runtime"
     deploy    = "${var.name_prefix}-migrate-deploy-identity"
@@ -22,13 +36,13 @@ locals {
       apiImage = {
         type              = "String"
         description       = "Immutable Identity API image"
-        allowedPattern    = "^[a-z0-9.-]+(/[a-z0-9/_-]+)+@sha256:[0-9a-f]{64}$"
+        allowedPattern    = "^${replace(local.identity_api_repository_url, ".", "[.]")}@sha256:[0-9a-f]{64}$"
         interpolationType = "ENV_VAR"
       }
       bffImage = {
         type              = "String"
         description       = "Immutable reference-BFF image"
-        allowedPattern    = "^[a-z0-9.-]+(/[a-z0-9/_-]+)+@sha256:[0-9a-f]{64}$"
+        allowedPattern    = "^${replace(local.identity_bff_repository_url, ".", "[.]")}@sha256:[0-9a-f]{64}$"
         interpolationType = "ENV_VAR"
       }
       issuer = {
@@ -43,22 +57,10 @@ locals {
         allowedPattern    = "^https://cognito-idp[.]ap-south-1[.]amazonaws[.]com/ap-south-1_[A-Za-z0-9]+/[.]well-known/jwks[.]json$"
         interpolationType = "ENV_VAR"
       }
-      audience = {
-        type              = "String"
-        description       = "Exact Identity OAuth audience"
-        allowedValues     = ["identity-service://api"]
-        interpolationType = "ENV_VAR"
-      }
       clientId = {
         type              = "String"
         description       = "Non-secret Cognito app-client identifier"
-        allowedPattern    = "^[a-z0-9]+$"
-        interpolationType = "ENV_VAR"
-      }
-      bffOrigin = {
-        type              = "String"
-        description       = "Exact production same-origin BFF origin"
-        allowedValues     = ["https://rahuly.in"]
+        allowedPattern    = "^[a-z0-9]{26}$"
         interpolationType = "ENV_VAR"
       }
     }
@@ -121,7 +123,7 @@ resource "aws_ssm_document" "identity" {
       name   = "identity${title(each.key)}"
       inputs = {
         timeoutSeconds = "3600"
-        runCommand     = [var.document_scripts[each.key]]
+        runCommand     = [local.rendered_document_scripts[each.key]]
       }
     }]
   })

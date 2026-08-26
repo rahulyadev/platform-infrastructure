@@ -14,77 +14,93 @@ deployment_failed() {
 }
 trap deployment_failed ERR
 
+readonly docker_config="$(mktemp -d /run/platform-identity-docker-auth.XXXXXXXX)"
+chmod 0700 "$docker_config"
+cleanup() {
+  rm -rf -- "$docker_config"
+}
+trap cleanup EXIT
+export DOCKER_CONFIG="$docker_config"
+
+readonly api_repository='__IDENTITY_API_REPOSITORY_URL__'
+readonly bff_repository='__IDENTITY_BFF_REPOSITORY_URL__'
+readonly ecr_registry='__IDENTITY_ECR_REGISTRY__'
 readonly release_id="${SSM_releaseId:?releaseId parameter required}"
 readonly api_image="${SSM_apiImage:?apiImage parameter required}"
 readonly bff_image="${SSM_bffImage:?bffImage parameter required}"
+readonly cognito_issuer="${SSM_issuer:?issuer parameter required}"
+readonly cognito_jwks_url="${SSM_jwksUri:?jwksUri parameter required}"
+readonly cognito_client_id="${SSM_clientId:?clientId parameter required}"
 readonly releases=/opt/platform/identity/releases
 readonly current=/opt/platform/identity/current
 readonly previous=/opt/platform/identity/previous
-readonly digest_pattern='^[a-z0-9.-]+(/[a-z0-9/_-]+)+@sha256:[0-9a-f]{64}$'
+readonly schema_head=0001_initial_identity_schema
 
 [[ "$release_id" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]]
-[[ "$api_image" =~ $digest_pattern ]]
-[[ "$bff_image" =~ $digest_pattern ]]
+[[ "${api_image%@sha256:*}" == "$api_repository" && "${api_image##*@sha256:}" =~ ^[0-9a-f]{64}$ ]]
+[[ "${bff_image%@sha256:*}" == "$bff_repository" && "${bff_image##*@sha256:}" =~ ^[0-9a-f]{64}$ ]]
+[[ "$api_image" != "$bff_image" ]]
+[[ "$cognito_issuer" =~ ^https://cognito-idp[.]ap-south-1[.]amazonaws[.]com/ap-south-1_[A-Za-z0-9]+$ ]]
+[[ "$cognito_jwks_url" == "$cognito_issuer/.well-known/jwks.json" ]]
+[[ "$cognito_client_id" =~ ^[a-z0-9]{26}$ ]]
 
 release="$releases/$release_id"
 [[ ! -e "$release" ]]
 install -d -m 0755 "$release"
-install -m 0644 /opt/platform/identity/compose.yml "$release/compose.yml"
-readonly cognito_issuer="${SSM_issuer:?issuer parameter required}"
-readonly cognito_jwks_uri="${SSM_jwksUri:?jwksUri parameter required}"
-readonly cognito_audience="${SSM_audience:?audience parameter required}"
-readonly cognito_client_id="${SSM_clientId:?clientId parameter required}"
-readonly bff_origin="${SSM_bffOrigin:?bffOrigin parameter required}"
-[[ "$cognito_issuer" =~ ^https://cognito-idp[.]ap-south-1[.]amazonaws[.]com/ap-south-1_[A-Za-z0-9]+$ ]]
-[[ "$cognito_jwks_uri" == "$cognito_issuer/.well-known/jwks.json" ]]
-[[ "$cognito_audience" == identity-service://api ]]
-[[ "$cognito_client_id" =~ ^[a-z0-9]+$ ]]
-[[ "$bff_origin" == https://rahuly.in ]]
-printf 'IDENTITY_API_IMAGE=%s\nIDENTITY_BFF_IMAGE=%s\nIDENTITY_RELEASE_ID=%s\nCOGNITO_ISSUER=%s\nCOGNITO_JWKS_URI=%s\nCOGNITO_AUDIENCE=%s\nCOGNITO_CLIENT_ID=%s\nBFF_ORIGIN=%s\n' \
-  "$api_image" "$bff_image" "$release_id" "$cognito_issuer" "$cognito_jwks_uri" "$cognito_audience" "$cognito_client_id" "$bff_origin" >"$release/release.env"
+install -m 0644 /etc/platform/identity/compose.yml "$release/compose.yml"
+printf 'IDENTITY_API_IMAGE=%s\nIDENTITY_BFF_IMAGE=%s\nIDENTITY_RELEASE_ID=%s\nCOGNITO_ISSUER=%s\nCOGNITO_JWKS_URL=%s\nCOGNITO_CLIENT_ID=%s\nIDENTITY_SCHEMA_HEAD=%s\nIDENTITY_ORIGIN=https://identity.rahuly.in\nBFF_ORIGIN=https://rahuly.in\nAUTHORIZATION_ENDPOINT=https://auth.rahuly.in/oauth2/authorize\nTOKEN_ENDPOINT=https://auth.rahuly.in/oauth2/token\nOAUTH_RESOURCE=identity-service://api\nREDIS_KEY_NAMESPACE=reference-bff:production:portfolio:identity\n' \
+  "$api_image" "$bff_image" "$release_id" "$cognito_issuer" "$cognito_jwks_url" "$cognito_client_id" "$schema_head" >"$release/release.env"
 chmod 0600 "$release/release.env"
 
+aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin "$ecr_registry" >/dev/null
 export IDENTITY_API_IMAGE="$api_image" IDENTITY_BFF_IMAGE="$bff_image"
-docker pull "$api_image"
-docker pull "$bff_image"
-[[ "$(docker image inspect --format '{{.Architecture}}' "$api_image")" == arm64 ]]
-[[ "$(docker image inspect --format '{{.Architecture}}' "$bff_image")" == arm64 ]]
+export COGNITO_ISSUER="$cognito_issuer" COGNITO_JWKS_URL="$cognito_jwks_url" COGNITO_CLIENT_ID="$cognito_client_id"
+docker pull "$api_image" >/dev/null
+docker pull "$bff_image" >/dev/null
+for image in "$api_image" "$bff_image"; do
+  [[ "$(docker image inspect --format '{{.Architecture}}/{{.Os}}' "$image")" == arm64/linux ]]
+  docker image inspect --format '{{join .RepoDigests "\n"}}' "$image" | grep -Fxq "$image"
+done
 
 docker compose --file "$release/compose.yml" --project-name identity-production run --rm --no-deps --user root postgres \
   sh -c 'chown 999:999 /run/postgresql /var/spool/pgbackrest && chmod 0770 /run/postgresql /var/spool/pgbackrest'
 docker compose --file "$release/compose.yml" --project-name identity-production up --detach --wait postgres redis
 docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY \
+  --user 10001:10001 \
+  --env PGPASSFILE=/run/secrets/database/bootstrap.pgpass postgres \
+  psql "host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/client/ca.crt" \
+  < /etc/platform/identity/postgres-roles.sql
+docker compose --file "$release/compose.yml" --project-name identity-production up --detach pgbackrest
+docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
+  pgbackrest --stanza=identity stanza-create
+docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
+  pgbackrest --stanza=identity check
+docker compose --file "$release/compose.yml" --project-name identity-production run --rm migrator
+observed_head="$(docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY \
   --env PGPASSFILE=/run/secrets/database/bootstrap.pgpass postgres \
   psql "host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt" \
-  < /opt/platform/identity/postgres-roles.sql
-docker compose --file "$release/compose.yml" --project-name identity-production up --detach pgbackrest
-docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY \
-  pgbackrest pgbackrest --stanza=identity stanza-create
-docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY \
-  pgbackrest pgbackrest --stanza=identity check
-docker compose --file "$release/compose.yml" --project-name identity-production run --rm migrator
-docker compose --file "$release/compose.yml" --project-name identity-production run --rm migrator check
-docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY \
-  pgbackrest pgbackrest --stanza=identity --type=full backup
-docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY \
-  pgbackrest touch /var/spool/pgbackrest/.last-backup-success
+  --no-psqlrc --tuples-only --no-align --command 'SELECT version_num FROM identity.alembic_version;')"
+[[ "$observed_head" == "$schema_head" ]]
+docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
+  pgbackrest --stanza=identity --type=full backup
+docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
+  touch /var/spool/pgbackrest/.last-backup-success
 
 old_target=""
 if [[ -L "$current" ]]; then
   old_target="$(readlink -f -- "$current")"
 fi
-ln -sfn -- "$release" "$current.next"
+ln -s -- "$release" "$current.next"
 mv -Tf -- "$current.next" "$current"
 install -m 0600 "$release/release.env" /etc/platform/identity/release.env
-install -m 0644 /etc/nginx/conf.d/identity-runtime.conf.staged /etc/nginx/conf.d/identity-runtime.conf
+install -m 0644 /etc/platform/identity/identity-runtime.conf.staged /etc/nginx/conf.d/identity-runtime.conf
 nginx -t
 systemctl reload nginx
 systemctl restart identity-stack.service
 
 if [[ -n "$old_target" && "$old_target" != "$release" ]]; then
-  ln -sfn -- "$old_target" "$previous.next"
+  ln -s -- "$old_target" "$previous.next"
   mv -Tf -- "$previous.next" "$previous"
 fi
-
 /usr/local/libexec/platform/identity-health-verify
-printf 'Identity deployment completed for an immutable release.\n'
+printf 'Identity deployment completed for an immutable repository-bound ARM64 release.\n'

@@ -1,5 +1,7 @@
 locals {
-  identity_image_contract = jsondecode(file("${path.root}/../../../../config/runtime/identity-images.json"))
+  identity_image_contract     = jsondecode(file("${path.root}/../../../../config/runtime/identity-images.json"))
+  identity_api_repository_url = "${var.expected_account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/${local.name_prefix}-identity-api"
+  identity_bff_repository_url = "${var.expected_account_id}.dkr.ecr.${var.aws_region}.amazonaws.com/${local.name_prefix}-identity-bff"
 
   identity_compose = templatefile("${path.root}/../../../../config/runtime/identity-compose.yml.tftpl", {
     postgres_image   = local.identity_image_contract.postgres.image
@@ -20,25 +22,33 @@ locals {
 
   identity_document_scripts = {
     configure = templatefile("${path.root}/../../../../deploy/ssm/configure-identity-runtime.sh.tftpl", {
-      docker_version         = local.identity_image_contract.docker.version
-      docker_archive_sha256  = local.identity_image_contract.docker.archive_sha256
-      compose_version        = local.identity_image_contract.compose.version
-      compose_binary_sha256  = local.identity_image_contract.compose.binary_sha256
-      pgbackrest_version     = local.identity_image_contract.pgbackrest.version
-      pgbackrest_tar_sha256  = local.identity_image_contract.pgbackrest.tar_sha256
-      compose_b64            = base64encode(local.identity_compose)
-      nginx_b64              = base64encode(local.identity_nginx)
-      pgbackrest_b64         = base64encode(local.identity_pgbackrest)
-      systemd_unit_b64       = base64encode(file("${path.root}/../../../../config/runtime/identity-stack.service"))
-      postgres_roles_b64     = base64encode(file("${path.root}/../../../../config/runtime/postgres-roles.sql"))
-      postgres_hba_b64       = base64encode(file("${path.root}/../../../../config/runtime/postgres-hba.conf"))
-      verify_release_b64     = base64encode(file("${path.root}/../../../../deploy/ssm/verify-identity-release.sh"))
+      docker_version        = local.identity_image_contract.docker.version
+      docker_archive_sha256 = local.identity_image_contract.docker.archive_sha256
+      compose_version       = local.identity_image_contract.compose.version
+      compose_binary_sha256 = local.identity_image_contract.compose.binary_sha256
+      pgbackrest_version    = local.identity_image_contract.pgbackrest.version
+      pgbackrest_tar_sha256 = local.identity_image_contract.pgbackrest.tar_sha256
+      compose_b64           = base64encode(local.identity_compose)
+      nginx_b64             = base64encode(local.identity_nginx)
+      pgbackrest_b64        = base64encode(local.identity_pgbackrest)
+      systemd_unit_b64      = base64encode(file("${path.root}/../../../../config/runtime/identity-stack.service"))
+      postgres_roles_b64    = base64encode(file("${path.root}/../../../../config/runtime/postgres-roles.sql"))
+      postgres_hba_b64      = base64encode(file("${path.root}/../../../../config/runtime/postgres-hba.conf"))
+      launcher_b64          = base64encode(file("${path.root}/../../../../config/runtime/identity-launcher.py"))
+      verify_release_b64 = base64encode(replace(
+        replace(
+          file("${path.root}/../../../../deploy/ssm/verify-identity-release.sh"),
+          "__IDENTITY_API_REPOSITORY_URL__",
+          local.identity_api_repository_url
+        ),
+        "__IDENTITY_BFF_REPOSITORY_URL__",
+        local.identity_bff_repository_url
+      ))
       health_verify_b64      = base64encode(file("${path.root}/../../../../deploy/ssm/verify-identity.sh"))
       pgbackrest_sidecar_b64 = base64encode(file("${path.root}/../../../../config/runtime/pgbackrest-sidecar.sh"))
       docker_service_b64     = base64encode(file("${path.root}/../../../../config/runtime/docker.service"))
       pgbackrest_passwd_b64  = base64encode(file("${path.root}/../../../../config/runtime/pgbackrest-passwd"))
       bff_client_secret_arn  = var.identity_bff_client_secret_arn == null ? "" : var.identity_bff_client_secret_arn
-      bff_runtime_secret_arn = var.identity_bff_runtime_secret_arn == null ? "" : var.identity_bff_runtime_secret_arn
       database_secret_arn    = var.identity_database_secret_arn == null ? "" : var.identity_database_secret_arn
       redis_secret_arn       = var.identity_redis_secret_arn == null ? "" : var.identity_redis_secret_arn
       backup_secret_arn      = var.identity_backup_secret_arn == null ? "" : var.identity_backup_secret_arn
@@ -68,9 +78,9 @@ module "identity_production" {
   github_repository_id     = var.identity_github_repository_id
   github_environment       = var.identity_github_environment
   backup_bucket_arn        = local.core.backup_bucket_arn
+  alarm_topic_arn          = module.monitoring.alarm_topic_arn
   runtime_secret_arns = toset([
     var.identity_bff_client_secret_arn,
-    var.identity_bff_runtime_secret_arn,
     var.identity_database_secret_arn,
     var.identity_redis_secret_arn,
     var.identity_backup_secret_arn,

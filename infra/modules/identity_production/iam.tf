@@ -27,7 +27,7 @@ data "aws_iam_policy_document" "github_identity_deployer" {
     ]
     resources = concat(
       ["arn:aws:ec2:${var.aws_region}:${var.expected_account_id}:instance/${var.instance_id}"],
-      [for document in aws_ssm_document.identity : document.arn],
+      [for key in ["deploy", "verify", "rollback"] : aws_ssm_document.identity[key].arn],
     )
   }
 
