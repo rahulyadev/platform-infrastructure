@@ -14,6 +14,7 @@ files=(
   config/runtime/identity-launcher.py
   config/runtime/postgres-roles.sql
   deploy/ssm/configure-identity-runtime.sh.tftpl
+  deploy/ssm/backup-identity.sh
   deploy/ssm/deploy-identity.sh
   deploy/ssm/restore-identity.sh
   deploy/ssm/rollback-identity.sh
@@ -26,7 +27,7 @@ files=(
   infra/modules/identity_production/variables.tf
 )
 
-for mutation in {1..12}; do
+for mutation in {1..18}; do
   root="$temporary/$mutation"
   install -d -m 0700 "$root"
   for file in "${files[@]}"; do
@@ -45,6 +46,12 @@ for mutation in {1..12}; do
     10) sed -i 's#https://identity.${base_domain}#https://${base_domain}#' "$root/config/nginx/identity-runtime.conf.tftpl" ;;
     11) sed -i '/live_schema=/d' "$root/deploy/ssm/rollback-identity.sh" ;;
     12) sed -i 's/== 13/== 12/' "$root/deploy/ssm/verify-identity-release.sh" ;;
+    13) sed -i 's/restore_prior_release/skip_prior_restore/g' "$root/deploy/ssm/deploy-identity.sh" ;;
+    14) sed -i 's/platform-identity-lifecycle[.]lock/platform-identity-rollback.lock/' "$root/deploy/ssm/rollback-identity.sh" ;;
+    15) sed -i 's/IDENTITY_POST_MIGRATION_AUDIT/IDENTITY_OPTIONAL_AUDIT/g' "$root/config/runtime/postgres-roles.sql" ;;
+    16) sed -i 's/platform_recovery[.]markers/platform_recovery.unbound/g' "$root/deploy/ssm/restore-identity.sh" ;;
+    17) sed -i '/already matches the active generation/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    18) sed -i 's/INSERT INTO platform_recovery[.]markers/INSERT INTO platform_recovery.unbound/' "$root/deploy/ssm/backup-identity.sh" ;;
   esac
   if python3 "$repository_root/tests/runtime/verify-identity-contract.py" "$root" >"$temporary/output" 2>&1; then
     printf 'Production Identity mutation probe %d was not rejected safely.\n' "$mutation" >&2

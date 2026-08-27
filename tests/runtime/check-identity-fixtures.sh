@@ -305,7 +305,7 @@ docker run --detach --name "$postgres" --network "$network" --network-alias post
   "$postgres_image" postgres \
   -c ssl=on -c ssl_cert_file=/run/tls/postgres/server.crt -c ssl_key_file=/run/tls/postgres/server.key \
   -c ssl_ca_file=/run/tls/postgres/ca.crt -c hba_file=/run/config/postgres-hba.conf \
-  -c archive_mode=on -c 'archive_command=test ! -f /var/spool/pgbackrest/%f && cp %p /var/spool/pgbackrest/%f.part && mv /var/spool/pgbackrest/%f.part /var/spool/pgbackrest/%f' >/dev/null
+  -c archive_mode=off >/dev/null
 
 stage=postgres_tls_ready
 for _ in {1..60}; do
@@ -333,6 +333,10 @@ if ! docker exec --user 10001:10001 --env PGPASSWORD="$bootstrap_password" --int
   fi
   exit 1
 fi
+stage=postgres_roles_idempotent
+docker exec --user 10001:10001 --env PGPASSWORD="$bootstrap_password" --interactive "$postgres" \
+  psql 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/client/ca.crt' \
+  < config/runtime/postgres-roles.sql >/dev/null 2>"$temporary/postgres-second.stderr"
 stage=postgres_migration
 docker run --rm --network "$network" --user 10001:10001 --read-only --cap-drop ALL \
   --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m \
@@ -345,6 +349,32 @@ observed_head="$(docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" 
   psql 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' \
   --no-psqlrc --tuples-only --no-align --command 'SELECT version_num FROM identity.alembic_version;')"
 [[ "$observed_head" == 0001_initial_identity_schema ]]
+stage=postgres_exact_audit
+if ! docker exec --user 10001:10001 --env PGPASSWORD="$bootstrap_password" --interactive "$postgres" \
+  psql 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/client/ca.crt' \
+  --set IDENTITY_POST_MIGRATION_AUDIT=1 < config/runtime/postgres-roles.sql >/dev/null 2>"$temporary/postgres-audit.stderr"; then
+  case "$(grep -Eo 'identity [a-z -]+ contract mismatch' "$temporary/postgres-audit.stderr" | head -1 || true)" in
+    'identity role attribute contract mismatch') category=role-attributes ;;
+    'identity role membership contract mismatch') category=role-membership ;;
+    'identity ownership or public privilege contract mismatch') category=ownership-public ;;
+    'identity runtime role ownership contract mismatch') category=runtime-ownership ;;
+    'identity current-head object inventory mismatch') category=current-head ;;
+    'identity runtime table privilege contract mismatch') category=table-privileges ;;
+    'identity runtime column privilege contract mismatch') category=column-privileges ;;
+    'identity runtime extra privilege contract mismatch') category=extra-privileges ;;
+    *)
+      if grep -Fq 'syntax error' "$temporary/postgres-audit.stderr"; then category=sql-syntax
+      elif grep -Eq 'column .* does not exist' "$temporary/postgres-audit.stderr"; then category=catalog-column
+      elif grep -Fq 'permission denied' "$temporary/postgres-audit.stderr"; then category=permission
+      elif grep -Fq 'invalid command' "$temporary/postgres-audit.stderr"; then category=psql-command
+      elif grep -Fq 'current transaction is aborted' "$temporary/postgres-audit.stderr"; then category=transaction-aborted
+      else category=unclassified
+      fi
+      ;;
+  esac
+  printf 'Identity PostgreSQL exact audit failed safely at category=%s.\n' "$category" >&2
+  exit 1
+fi
 stage=postgres_least_privilege
 privilege_proof="$(docker exec --env PGPASSWORD="$runtime_password" "$postgres" \
   psql 'host=postgres port=5432 dbname=identity user=identity_service_app sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' \
@@ -364,6 +394,100 @@ if docker exec --env PGPASSWORD="$runtime_password" "$postgres" \
   exit 1
 fi
 
+run_bootstrap_contract_expect_failure() {
+  local mode="$1"
+  local -a arguments=()
+  if [[ "$mode" == audit ]]; then arguments+=(--set IDENTITY_POST_MIGRATION_AUDIT=1); fi
+  if docker exec --user 10001:10001 --env PGPASSWORD="$bootstrap_password" --interactive "$postgres" \
+    psql 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/client/ca.crt' \
+    "${arguments[@]}" < config/runtime/postgres-roles.sql >"$temporary/postgres-drift.out" 2>&1; then
+    printf 'Identity PostgreSQL fixture did not reject injected contract drift.\n' >&2
+    exit 1
+  fi
+  chmod 0600 "$temporary/postgres-drift.out"
+  : >"$temporary/postgres-drift.out"
+}
+
+stage=postgres_role_attribute_drift
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'ALTER ROLE identity_service_app INHERIT;' >/dev/null
+run_bootstrap_contract_expect_failure bootstrap
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'ALTER ROLE identity_service_app NOINHERIT;' >/dev/null
+
+stage=postgres_membership_drift
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'CREATE ROLE identity_fixture_extra NOLOGIN; GRANT identity_fixture_extra TO identity_service_app;' >/dev/null
+run_bootstrap_contract_expect_failure bootstrap
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'REVOKE identity_fixture_extra FROM identity_service_app; DROP ROLE identity_fixture_extra;' >/dev/null
+
+stage=postgres_ownership_drift
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'ALTER SCHEMA identity OWNER TO identity_service_app;' >/dev/null
+run_bootstrap_contract_expect_failure bootstrap
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'ALTER SCHEMA identity OWNER TO identity_service_owner; REVOKE CREATE ON SCHEMA identity FROM identity_service_app; GRANT USAGE ON SCHEMA identity TO identity_service_app;' >/dev/null
+
+stage=postgres_runtime_grant_drift
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'GRANT DELETE ON identity.profiles TO identity_service_app;' >/dev/null
+run_bootstrap_contract_expect_failure audit
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'REVOKE DELETE ON identity.profiles FROM identity_service_app;' >/dev/null
+
+stage=postgres_column_grant_drift
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'GRANT UPDATE (status) ON identity.users TO identity_service_app;' >/dev/null
+run_bootstrap_contract_expect_failure audit
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'REVOKE UPDATE (status) ON identity.users FROM identity_service_app;' >/dev/null
+extra_privilege_proof="$(docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --tuples-only --no-align --command "SELECT concat_ws(':', EXISTS (SELECT 1 FROM information_schema.role_table_grants WHERE grantee = 'identity_service_app' AND table_schema <> 'identity'), EXISTS (SELECT 1 FROM information_schema.role_usage_grants WHERE grantee = 'identity_service_app'), EXISTS (SELECT 1 FROM information_schema.role_routine_grants WHERE grantee = 'identity_service_app'), has_schema_privilege('identity_service_app', 'identity', 'CREATE'), NOT has_schema_privilege('identity_service_app', 'identity', 'USAGE'));")"
+case "$extra_privilege_proof" in
+  'f:f:f:f:f') ;;
+  't:'*) category=cross-schema-table ;;
+  'f:t:'*) category=usage ;;
+  'f:f:t:'*) category=routine ;;
+  'f:f:f:t:'*) category=schema-create ;;
+  *) category=schema-usage ;;
+esac
+if [[ "$extra_privilege_proof" != f:f:f:f:f ]]; then
+  printf 'Identity PostgreSQL drift cleanup failed safely at category=%s.\n' "$category" >&2
+  exit 1
+fi
+docker exec --user 10001:10001 --env PGPASSWORD="$bootstrap_password" --interactive "$postgres" \
+  psql 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/client/ca.crt' \
+  --set IDENTITY_POST_MIGRATION_AUDIT=1 < config/runtime/postgres-roles.sql >/dev/null
+
+stage=pre_backup_recovery_marker
+recovery_marker=0123456789abcdef0123456789abcdef
+recovery_marker_created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+docker exec --interactive --env PGPASSWORD="$bootstrap_password" "$postgres" \
+  psql 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' \
+  --no-psqlrc --set ON_ERROR_STOP=1 --set marker="$recovery_marker" --set marker_created_at="$recovery_marker_created_at" <<'SQL' >/dev/null
+CREATE SCHEMA platform_recovery AUTHORIZATION identity_bootstrap;
+REVOKE ALL ON SCHEMA platform_recovery FROM PUBLIC, identity_service_owner, identity_service_migrator, identity_service_app;
+CREATE TABLE platform_recovery.markers(marker text PRIMARY KEY, created_at timestamptz NOT NULL);
+REVOKE ALL ON TABLE platform_recovery.markers FROM PUBLIC, identity_service_owner, identity_service_migrator, identity_service_app;
+INSERT INTO platform_recovery.markers(marker, created_at) VALUES (:'marker', :'marker_created_at'::timestamptz);
+CHECKPOINT;
+SQL
+[[ "$(docker exec "$postgres" psql --username identity_bootstrap --dbname identity --no-psqlrc --tuples-only --no-align \
+  --command 'SELECT count(*) FROM platform_recovery.markers;')" == 1 ]]
+[[ "$(docker exec "$postgres" psql --username identity_bootstrap --dbname identity --no-psqlrc --tuples-only --no-align \
+  --command 'SHOW data_directory;')" == /var/lib/postgresql/18/docker ]]
+
+stage=pre_backup_marker_persistence
+docker stop "$postgres" >/dev/null
+docker start "$postgres" >/dev/null
+for _ in {1..60}; do
+  if docker exec "$postgres" pg_isready --dbname identity --username identity_bootstrap >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+[[ "$(docker exec "$postgres" psql --username identity_bootstrap --dbname identity --no-psqlrc --tuples-only --no-align \
+  --command 'SELECT count(*) FROM platform_recovery.markers;')" == 1 ]]
+
 stage=pgbackrest_offline_prepare
 docker stop "$postgres" >/dev/null
 docker run --rm --user 0:0 --mount "type=volume,src=$data_volume,dst=/var/lib/postgresql" \
@@ -376,30 +500,18 @@ docker run --detach --name "$archiver" --user 2001:2001 \
 stage=pgbackrest_full_backup
 docker exec "$archiver" pgbackrest --stanza=fixture --no-online stanza-create >/dev/null 2>"$temporary/pgbackrest-stanza.stderr"
 docker exec "$archiver" pgbackrest --stanza=fixture --no-online --type=full backup >/dev/null 2>"$temporary/pgbackrest-full.stderr"
-docker start "$postgres" >/dev/null
-for _ in {1..60}; do
-  if docker exec "$postgres" pg_isready --dbname 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' >/dev/null 2>&1; then break; fi
-  sleep 1
-done
-docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" \
-  psql 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' \
-  --no-psqlrc --command "CREATE TABLE public.platform_restore_sentinel(value text PRIMARY KEY); INSERT INTO public.platform_restore_sentinel VALUES ('published-head-backed-up');" >/dev/null
-stage=pgbackrest_diff_backup
-docker stop "$postgres" >/dev/null
-docker run --rm --user 0:0 --mount "type=volume,src=$data_volume,dst=/var/lib/postgresql" \
-  --entrypoint /bin/sh "$postgres_image" -c 'chgrp -R 2001 /var/lib/postgresql/18/docker && chmod -R g+rX /var/lib/postgresql/18/docker'
-docker exec "$archiver" pgbackrest --stanza=fixture --no-online --type=diff backup >/dev/null 2>"$temporary/pgbackrest-diff.stderr"
+fixture_marker_backup_label="$(docker exec "$archiver" pgbackrest --stanza=fixture info --output=json | python3 -c 'import json,sys; value=json.load(sys.stdin); print(value[0]["backup"][-1]["label"])')"
+[[ "$fixture_marker_backup_label" =~ ^[0-9]{8}-[0-9]{6}F$ ]]
 docker stop "$archiver" >/dev/null
-
 stage=pgbackrest_restore
 docker run --rm --user 2001:2001 \
   --mount "type=volume,src=$restore_volume,dst=/var/lib/postgresql" \
   --mount "type=volume,src=$repository_volume,dst=/repository,readonly" \
   --mount "type=volume,src=$pgbackrest_config_volume,dst=/etc/pgbackrest,readonly" \
-  "$pgbackrest_image" pgbackrest --stanza=fixture --pg1-path=/var/lib/postgresql/18/docker restore >/dev/null
+  "$pgbackrest_image" pgbackrest --stanza=fixture --pg1-path=/var/lib/postgresql/18/docker --set="$fixture_marker_backup_label" restore >/dev/null
 docker run --rm --user 0:0 --mount "type=volume,src=$restore_volume,dst=/var/lib/postgresql" \
   --entrypoint /bin/sh "$postgres_image" -c 'chown -R 999:999 /var/lib/postgresql && chmod 0700 /var/lib/postgresql /var/lib/postgresql/18/docker'
-stage=postgres_restore_verify
+stage=postgres_restore_start
 docker run --detach --name "$restore" --network "$network" \
   --mount "type=volume,src=$restore_volume,dst=/var/lib/postgresql" \
   --mount "type=volume,src=$restore_socket_volume,dst=/run/postgresql" \
@@ -414,9 +526,58 @@ for _ in {1..60}; do
   if docker exec "$restore" pg_isready --dbname identity --username identity_bootstrap >/dev/null 2>&1; then break; fi
   sleep 1
 done
-restore_proof="$(docker exec "$restore" psql --username identity_bootstrap --dbname identity \
-  --no-psqlrc --tuples-only --no-align --command "SELECT (SELECT version_num FROM identity.alembic_version) || ':' || (SELECT value FROM public.platform_restore_sentinel);")"
-[[ "$restore_proof" == '0001_initial_identity_schema:published-head-backed-up' ]]
+[[ "$(docker exec "$restore" psql --username identity_bootstrap --dbname identity --no-psqlrc --tuples-only --no-align \
+  --command 'SELECT count(*) FROM platform_recovery.markers;')" == 1 ]]
+stage=pgbackrest_diff_change
+docker start "$postgres" >/dev/null
+for _ in {1..60}; do
+  if docker exec "$postgres" pg_isready --dbname identity --username identity_bootstrap >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+docker exec --interactive --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 <<'SQL' >/dev/null
+CREATE TABLE public.fixture_diff_probe(value text NOT NULL);
+INSERT INTO public.fixture_diff_probe(value) VALUES ('bounded-differential-proof');
+CHECKPOINT;
+SQL
+docker stop "$postgres" >/dev/null
+docker run --rm --user 0:0 --mount "type=volume,src=$data_volume,dst=/var/lib/postgresql" \
+  --entrypoint /bin/sh "$postgres_image" -c 'chgrp -R 2001 /var/lib/postgresql/18/docker && chmod -R g+rX /var/lib/postgresql/18/docker'
+docker start "$archiver" >/dev/null
+stage=pgbackrest_diff_backup
+docker exec "$archiver" pgbackrest --stanza=fixture --no-online --type=diff backup >/dev/null 2>"$temporary/pgbackrest-diff.stderr"
+fixture_backup_label="$(docker exec "$archiver" pgbackrest --stanza=fixture info --output=json | python3 -c 'import json,sys; value=json.load(sys.stdin); print(value[0]["backup"][-1]["label"])')"
+[[ "$fixture_backup_label" =~ ^[0-9]{8}-[0-9]{6}F_[0-9]{8}-[0-9]{6}D$ ]]
+docker stop "$archiver" >/dev/null
+
+stage=postgres_restore_verify
+restore_proof="$(docker exec --interactive "$restore" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --tuples-only --no-align --set marker="$recovery_marker" --set marker_created_at="$recovery_marker_created_at" <<'SQL'
+SELECT concat_ws(':',
+  (SELECT version_num = '0001_initial_identity_schema' FROM identity.alembic_version),
+  EXISTS (SELECT 1 FROM platform_recovery.markers WHERE marker = :'marker' AND created_at = :'marker_created_at'::timestamptz),
+  NOT has_schema_privilege('identity_service_app','platform_recovery','USAGE'),
+  NOT has_table_privilege('identity_service_app','platform_recovery.markers','SELECT'));
+SQL
+)"
+[[ "$restore_proof" == 't:t:t:t' ]]
+stage=postgres_restore_marker_mutations
+missing_marker="$(docker exec "$restore" psql --username identity_bootstrap --dbname identity --no-psqlrc --tuples-only --no-align \
+  --command "SELECT EXISTS (SELECT 1 FROM platform_recovery.markers WHERE marker = 'ffffffffffffffffffffffffffffffff');")"
+[[ "$missing_marker" == f ]]
+stale_marker="$(docker exec --interactive "$restore" psql --username identity_bootstrap --dbname identity --no-psqlrc --tuples-only --no-align \
+  --set marker="$recovery_marker" <<'SQL'
+SELECT EXISTS (SELECT 1 FROM platform_recovery.markers WHERE marker = :'marker' AND created_at = '2000-01-01T00:00:00Z');
+SQL
+)"
+[[ "$stale_marker" == f ]]
+docker exec "$restore" psql --username identity_bootstrap --dbname identity --no-psqlrc --set ON_ERROR_STOP=1 \
+  --command 'GRANT USAGE ON SCHEMA platform_recovery TO identity_service_app; GRANT SELECT ON platform_recovery.markers TO identity_service_app;' >/dev/null
+readable_marker="$(docker exec "$restore" psql --username identity_bootstrap --dbname identity --no-psqlrc --tuples-only --no-align \
+  --command "SELECT NOT has_schema_privilege('identity_service_app','platform_recovery','USAGE') AND NOT has_table_privilege('identity_service_app','platform_recovery.markers','SELECT');")"
+[[ "$readable_marker" == f ]]
+docker exec "$restore" psql --username identity_bootstrap --dbname identity --no-psqlrc --set ON_ERROR_STOP=1 \
+  --command 'REVOKE ALL ON TABLE platform_recovery.markers FROM identity_service_app; REVOKE ALL ON SCHEMA platform_recovery FROM identity_service_app;' >/dev/null
 
 start_redis() {
   docker run --detach --name "$redis" --network "$network" --network-alias redis \

@@ -4,6 +4,79 @@ IFS=$'\n\t'
 umask 077
 set +x
 
+if [[ "$*" == --transaction-fixture ]]; then
+  fixture_root="$PLATFORM_IDENTITY_CONFIGURATION_TEST_ROOT"
+  [[ "$fixture_root" == /tmp/* && -d "$fixture_root" && ! -L "$fixture_root" ]]
+  [[ "$fixture_root" == "$(realpath -e -- "$fixture_root")" ]]
+  fixture_lock="$fixture_root/run/lock/platform-identity-lifecycle.lock"
+  install -d -m 0755 "$(dirname -- "$fixture_lock")"
+  exec 9>"$fixture_lock"
+  flock -w 30 9
+  fixture_stage="$fixture_root/stage"
+  fixture_active="$fixture_root/active"
+  fixture_rollback="$fixture_root/rollback"
+  fixture_fail_at="$PLATFORM_IDENTITY_FAIL_AT"
+  [[ -f "$fixture_stage/global-binary" && -f "$fixture_stage/global-unit" && -f "$fixture_stage/generation" ]]
+  install -d -m 0700 "$fixture_rollback"
+  fixture_restore() {
+    trap - ERR
+    for name in global-binary global-unit enablement; do
+      if [[ -f "$fixture_rollback/$name" ]]; then
+        cp --archive -- "$fixture_rollback/$name" "$fixture_active/.$name.next"
+        mv -Tf -- "$fixture_active/.$name.next" "$fixture_active/$name"
+      else
+        rm -f -- "$fixture_active/$name"
+      fi
+    done
+    if [[ -f "$fixture_rollback/generation-link" ]]; then
+      rm -f -- "$fixture_active/.generation-link.next"
+      ln -s -- "$(<"$fixture_rollback/generation-link")" "$fixture_active/.generation-link.next"
+      mv -Tf -- "$fixture_active/.generation-link.next" "$fixture_active/generation-link"
+    else
+      rm -f -- "$fixture_active/generation-link"
+    fi
+    rm -f -- "$fixture_active"/.*.next
+    printf 'Identity configuration transaction fixture failed safely.\n' >&2
+    exit 1
+  }
+  trap fixture_restore ERR
+  install -d -m 0755 "$fixture_active"
+  fixture_changed=false
+  for name in global-binary global-unit; do
+    if [[ ! -f "$fixture_active/$name" ]] || ! cmp -s "$fixture_stage/$name" "$fixture_active/$name"; then fixture_changed=true; fi
+  done
+  if [[ ! -L "$fixture_active/generation-link" || "$(readlink -- "$fixture_active/generation-link" 2>/dev/null || true)" != generations/new ]]; then fixture_changed=true; fi
+  if [[ "$fixture_changed" == false && -f "$fixture_active/enablement" ]] && grep -Fxq enabled "$fixture_active/enablement"; then
+    rm -rf -- "$fixture_rollback"
+    trap - ERR
+    printf 'Identity configuration transaction fixture was an exact no-op.\n'
+    exit 0
+  fi
+  if [[ "$PLATFORM_IDENTITY_FIXTURE_WORKLOAD_ACTIVE" == true ]]; then
+    printf 'Identity configuration transaction fixture rejected active host-global drift.\n' >&2
+    exit 1
+  fi
+  for name in global-binary global-unit enablement; do
+    [[ ! -f "$fixture_active/$name" ]] || cp --archive -- "$fixture_active/$name" "$fixture_rollback/$name"
+  done
+  [[ ! -L "$fixture_active/generation-link" ]] || readlink -- "$fixture_active/generation-link" >"$fixture_rollback/generation-link"
+  for name in global-binary global-unit; do
+    install -m 0644 "$fixture_stage/$name" "$fixture_active/.$name.next"
+    mv -Tf -- "$fixture_active/.$name.next" "$fixture_active/$name"
+    [[ "$fixture_fail_at" != "$name" ]]
+  done
+  ln -s -- generations/new "$fixture_active/.generation-link.next"
+  mv -Tf -- "$fixture_active/.generation-link.next" "$fixture_active/generation-link"
+  [[ "$fixture_fail_at" != generation-link ]]
+  printf 'enabled\n' >"$fixture_active/.enablement.next"
+  mv -Tf -- "$fixture_active/.enablement.next" "$fixture_active/enablement"
+  [[ "$fixture_fail_at" != enablement ]]
+  rm -rf -- "$fixture_rollback"
+  trap - ERR
+  printf 'Identity configuration transaction fixture completed.\n'
+  exit 0
+fi
+
 readonly docker_version='${docker_version}'
 readonly docker_sha256='${docker_archive_sha256}'
 readonly compose_version='${compose_version}'
@@ -16,17 +89,114 @@ readonly redis_secret_arn='${redis_secret_arn}'
 readonly backup_secret_arn='${backup_secret_arn}'
 readonly work_root=/var/lib/platform/identity-install
 readonly generation_root=/etc/platform/identity-generations
-readonly generation="$generation_root/$(date -u +%Y%m%dT%H%M%SZ)-$$"
-activated=false
+readonly lifecycle_lock=/run/lock/platform-identity-lifecycle.lock
+readonly generation_name="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+readonly staged_generation="$work_root/generation"
+readonly generation="$generation_root/$generation_name"
+readonly active_generation=/etc/platform/identity
+transaction_started=false
+transaction_committed=false
+previous_generation=""
+docker_was_enabled=false
+stack_was_enabled=false
+docker_was_active=false
+stack_was_active=false
+declare -a active_targets=()
+declare -a created_directories=()
+
+install -d -m 0755 /run/lock
+exec 9>"$lifecycle_lock"
+flock -w 30 9
+
+register_directory() {
+  local directory="$1" mode="$2"
+  if [[ -e "$directory" || -L "$directory" ]]; then
+    [[ -d "$directory" && ! -L "$directory" ]]
+  else
+    install -d -m "$mode" "$directory"
+    created_directories+=("$directory")
+  fi
+}
+
+atomic_file() {
+  local source="$1" target="$2" mode="$3" temporary
+  temporary="$(dirname -- "$target")/.$(basename -- "$target").identity.$$.next"
+  rm -f -- "$temporary"
+  install -m "$mode" "$source" "$temporary"
+  mv -Tf -- "$temporary" "$target"
+}
+
+atomic_link() {
+  local target="$1" link="$2" temporary
+  temporary="$(dirname -- "$link")/.$(basename -- "$link").identity.$$.next"
+  rm -f -- "$temporary"
+  ln -s -- "$target" "$temporary"
+  mv -Tf -- "$temporary" "$link"
+}
+
+snapshot_target() {
+  local target="$1" label
+  label="$(printf '%s' "$target" | sha256sum | cut -d' ' -f1)"
+  active_targets+=("$target")
+  if [[ -e "$target" || -L "$target" ]]; then
+    [[ -f "$target" && ! -L "$target" ]]
+    cp --archive -- "$target" "$work_root/rollback/$label.file"
+  else
+    : >"$work_root/rollback/$label.absent"
+  fi
+}
+
+restore_target() {
+  local target="$1" label backup temporary
+  label="$(printf '%s' "$target" | sha256sum | cut -d' ' -f1)"
+  backup="$work_root/rollback/$label.file"
+  temporary="$(dirname -- "$target")/.$(basename -- "$target").identity.$$.next"
+  rm -f -- "$temporary"
+  if [[ -f "$backup" ]]; then
+    cp --archive -- "$backup" "$temporary"
+    mv -Tf -- "$temporary" "$target"
+  else
+    rm -f -- "$target"
+  fi
+}
+
+restore_transaction() {
+  local status=0 index
+  set +e
+  if [[ -n "$previous_generation" ]]; then
+    atomic_link "$previous_generation" "$active_generation" || status=1
+  else
+    rm -f -- "$active_generation" || status=1
+  fi
+  for ((index = $${#active_targets[@]} - 1; index >= 0; index--)); do
+    restore_target "$${active_targets[$index]}" || status=1
+  done
+  systemctl daemon-reload >/dev/null 2>&1 || status=1
+  if [[ "$docker_was_enabled" == true ]]; then systemctl enable docker.service >/dev/null 2>&1 || status=1; else systemctl disable docker.service >/dev/null 2>&1 || status=1; fi
+  if [[ "$stack_was_enabled" == true ]]; then systemctl enable identity-stack.service >/dev/null 2>&1 || status=1; else systemctl disable identity-stack.service >/dev/null 2>&1 || status=1; fi
+  if [[ "$docker_was_active" == true ]]; then systemctl start docker.service >/dev/null 2>&1 || status=1; else systemctl stop docker.service >/dev/null 2>&1 || status=1; fi
+  if [[ "$stack_was_active" == true ]]; then systemctl start identity-stack.service >/dev/null 2>&1 || status=1; else systemctl stop identity-stack.service >/dev/null 2>&1 || status=1; fi
+  rm -rf -- "$generation" >/dev/null 2>&1 || status=1
+  for ((index = $${#created_directories[@]} - 1; index >= 0; index--)); do
+    rmdir -- "$${created_directories[$index]}" >/dev/null 2>&1 || true
+  done
+  set -e
+  return "$status"
+}
 
 fail() {
-  find "$work_root" -maxdepth 1 -type f -delete >/dev/null 2>&1 || true
-  rm -rf -- "$work_root/docker" >/dev/null 2>&1 || true
-  if [[ "$activated" == false ]]; then
-    rm -rf -- "$generation" >/dev/null 2>&1 || true
+  local original_status=$?
+  trap - ERR
+  if [[ "$transaction_started" == true && "$transaction_committed" == false ]]; then
+    if ! restore_transaction; then
+      printf 'Identity runtime configuration failed and prior host restoration failed.\n' >&2
+      exit 1
+    fi
   fi
+  find "$work_root" -maxdepth 1 -type f -delete >/dev/null 2>&1 || true
+  rm -rf -- "$work_root/docker" "$staged_generation" "$work_root/active" "$work_root/rollback" >/dev/null 2>&1 || true
   printf 'Identity runtime configuration failed safely.\n' >&2
-  exit 1
+  exit "$original_status"
 }
 trap fail ERR
 
@@ -36,18 +206,10 @@ else
   install -d -m 0700 "$work_root"
 fi
 find "$work_root" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-if [[ -e "$generation_root" || -L "$generation_root" ]]; then
-  [[ -d "$generation_root" && ! -L "$generation_root" && "$(stat -c '%a:%u:%g' "$generation_root")" == 700:0:0 ]]
-else
-  install -d -m 0700 "$generation_root"
-fi
-install -d -m 0755 /opt/platform/identity/releases /usr/local/lib/docker/cli-plugins /usr/local/libexec/platform /etc/pgbackrest
+install -d -m 0700 "$staged_generation" "$staged_generation/secrets" "$staged_generation/tls" "$work_root/active" "$work_root/rollback"
 
 download_verified() {
-  local url="$1"
-  local expected="$2"
-  local destination="$3"
-  local temporary="$destination.part"
+  local url="$1" expected="$2" destination="$3" temporary="$3.part"
   curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --output "$temporary" "$url" 2>"$work_root/download.stderr"
   printf '%s  %s\n' "$expected" "$temporary" | sha256sum --check --status
   mv -f -- "$temporary" "$destination"
@@ -57,41 +219,52 @@ download_verified() {
 download_verified "https://download.docker.com/linux/static/stable/aarch64/docker-$${docker_version}.tgz" "$docker_sha256" "$work_root/docker.tgz"
 tar --extract --gzip --file "$work_root/docker.tgz" --directory "$work_root"
 for binary in containerd containerd-shim-runc-v2 ctr docker dockerd docker-init docker-proxy runc; do
-  install -m 0755 "$work_root/docker/$binary" "/usr/local/bin/$binary"
+  [[ -f "$work_root/docker/$binary" && ! -L "$work_root/docker/$binary" && -x "$work_root/docker/$binary" ]]
+  install -D -m 0755 "$work_root/docker/$binary" "$work_root/active/usr/local/bin/$binary"
 done
 download_verified "https://github.com/docker/compose/releases/download/v$${compose_version}/docker-compose-linux-aarch64" "$compose_sha256" "$work_root/docker-compose"
-install -m 0755 "$work_root/docker-compose" /usr/local/lib/docker/cli-plugins/docker-compose
+install -D -m 0755 "$work_root/docker-compose" "$work_root/active/usr/local/lib/docker/cli-plugins/docker-compose"
 download_verified "https://github.com/pgbackrest/pgbackrest/releases/download/release%2F$${pgbackrest_version}/pgbackrest-$${pgbackrest_version}.tar.gz" "$pgbackrest_sha256" "$work_root/pgbackrest.tar.gz"
-install -m 0644 "$work_root/pgbackrest.tar.gz" "/opt/platform/identity/pgbackrest-$${pgbackrest_version}.tar.gz"
+install -D -m 0644 "$work_root/pgbackrest.tar.gz" "$work_root/active/opt/platform/identity/pgbackrest-$${pgbackrest_version}.tar.gz"
 
-install -d -m 0755 "$generation" "$generation/secrets" "$generation/tls"
-install -d -m 0750 -o root -g 10002 "$generation/secrets/client" "$generation/secrets/redis-client" "$generation/tls/redis-client"
-install -d -m 0750 -o root -g 10001 "$generation/secrets/database" "$generation/tls/postgres-client"
-install -d -m 0750 -o root -g 999 "$generation/secrets/redis-server" "$generation/tls/redis-server" "$generation/tls/postgres-server"
-install -d -m 0750 -o root -g 65532 "$generation/secrets/backup"
+python3 - "$work_root/docker.tgz" "$work_root/pgbackrest.tar.gz" <<'PY'
+import pathlib
+import sys
+import tarfile
+for value in sys.argv[1:]:
+    with tarfile.open(value, "r:gz") as archive:
+        members = archive.getmembers()
+        if not members:
+            raise SystemExit(2)
+        for member in members:
+            path = pathlib.PurePosixPath(member.name)
+            if path.is_absolute() or ".." in path.parts or member.issym() or member.islnk() or member.isdev():
+                raise SystemExit(2)
+PY
+
+install -d -m 0755 "$staged_generation/secrets" "$staged_generation/tls"
+install -d -m 0750 -o root -g 10002 "$staged_generation/secrets/client" "$staged_generation/secrets/redis-client" "$staged_generation/tls/redis-client"
+install -d -m 0750 -o root -g 10001 "$staged_generation/secrets/database" "$staged_generation/tls/postgres-client"
+install -d -m 0750 -o root -g 999 "$staged_generation/secrets/redis-server" "$staged_generation/tls/redis-server" "$staged_generation/tls/postgres-server"
+install -d -m 0750 -o root -g 65532 "$staged_generation/secrets/backup"
 
 write_b64() {
-  local encoded="$1"
-  local destination="$2"
-  local mode="$3"
-  local temporary="$destination.tmp"
+  local encoded="$1" destination="$2" mode="$3" temporary="$2.tmp"
   printf '%s' "$encoded" | base64 --decode >"$temporary"
   chmod "$mode" "$temporary"
   mv -f -- "$temporary" "$destination"
 }
-
-write_b64 '${compose_b64}' "$generation/compose.yml" 0644
-write_b64 '${nginx_b64}' "$generation/identity-runtime.conf.staged" 0644
-write_b64 '${pgbackrest_b64}' "$generation/pgbackrest.conf" 0440
-chown root:65532 "$generation/pgbackrest.conf"
-write_b64 '${postgres_roles_b64}' "$generation/postgres-roles.sql" 0600
-write_b64 '${postgres_hba_b64}' "$generation/postgres-hba.conf" 0644
-write_b64 '${pgbackrest_passwd_b64}' "$generation/pgbackrest-passwd" 0644
-write_b64 '${launcher_b64}' "$generation/identity-launcher.py" 0555
+write_b64 '${compose_b64}' "$staged_generation/compose.yml" 0644
+write_b64 '${nginx_b64}' "$staged_generation/identity-runtime.conf.staged" 0644
+write_b64 '${pgbackrest_b64}' "$staged_generation/pgbackrest.conf" 0440
+chown root:65532 "$staged_generation/pgbackrest.conf"
+write_b64 '${postgres_roles_b64}' "$staged_generation/postgres-roles.sql" 0600
+write_b64 '${postgres_hba_b64}' "$staged_generation/postgres-hba.conf" 0644
+write_b64 '${pgbackrest_passwd_b64}' "$staged_generation/pgbackrest-passwd" 0644
+write_b64 '${launcher_b64}' "$staged_generation/identity-launcher.py" 0555
 
 fetch_secret() {
-  local secret_arn="$1"
-  local destination="$2"
+  local secret_arn="$1" destination="$2"
   [[ -n "$secret_arn" ]]
   aws secretsmanager get-secret-value --region ap-south-1 --secret-id "$secret_arn" --version-stage AWSCURRENT --query SecretString --output text >"$destination" 2>"$work_root/secret.stderr"
   chmod 0600 "$destination"
@@ -102,13 +275,12 @@ fetch_secret "$database_secret_arn" "$work_root/database.json"
 fetch_secret "$redis_secret_arn" "$work_root/redis.json"
 fetch_secret "$backup_secret_arn" "$work_root/backup.json"
 
-python3 - "$work_root" "$generation" 2>"$work_root/secret.stderr" <<'PY'
+python3 - "$work_root" "$staged_generation" 2>"$work_root/secret.stderr" <<'PY'
 import json
 import os
 import pathlib
 import re
 import sys
-
 work = pathlib.Path(sys.argv[1])
 generation = pathlib.Path(sys.argv[2])
 schemas = {
@@ -117,7 +289,6 @@ schemas = {
     "redis": {"bff_password", "redis_ca_crt", "redis_server_crt", "redis_server_key"},
     "backup": {"repository_cipher"},
 }
-
 def no_duplicates(pairs):
     result = {}
     for key, value in pairs:
@@ -125,31 +296,22 @@ def no_duplicates(pairs):
             raise ValueError("duplicate")
         result[key] = value
     return result
-
 objects = {}
 for name, fields in schemas.items():
     with (work / f"{name}.json").open("r", encoding="utf-8") as handle:
         value = json.load(handle, object_pairs_hook=no_duplicates)
-    if not isinstance(value, dict) or set(value) != fields:
-        raise SystemExit(2)
-    if any(not isinstance(item, str) or not item for item in value.values()):
+    if not isinstance(value, dict) or set(value) != fields or any(not isinstance(item, str) or not item for item in value.values()):
         raise SystemExit(2)
     objects[name] = value
-
-for name, fields in (
-    ("database", ("postgres_ca_crt", "postgres_server_crt", "postgres_server_key")),
-    ("redis", ("redis_ca_crt", "redis_server_crt", "redis_server_key")),
-):
+for name, fields in (("database", ("postgres_ca_crt", "postgres_server_crt", "postgres_server_key")), ("redis", ("redis_ca_crt", "redis_server_crt", "redis_server_key"))):
     for field in fields:
         encoded = objects[name][field].encode("ascii", "strict")
         if not 256 <= len(encoded) <= 32768 or b"\r" in encoded or b"\x00" in encoded:
             raise SystemExit(2)
-
 credential = re.compile(r"[A-Za-z0-9!#$%&()*+,./:;<=>?@\[\]^_`{|}~-]{32,256}")
 for name, field in (("client", "client_secret"), ("database", "bootstrap_password"), ("database", "migrator_password"), ("database", "runtime_password"), ("redis", "bff_password"), ("backup", "repository_cipher")):
     if not credential.fullmatch(objects[name][field]):
         raise SystemExit(2)
-
 def write(relative, value, gid, mode=0o440):
     target = generation / relative
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
@@ -157,7 +319,6 @@ def write(relative, value, gid, mode=0o440):
     os.fchmod(descriptor, mode)
     with os.fdopen(descriptor, "w", encoding="ascii", newline="") as stream:
         stream.write(value)
-
 write("secrets/client/client_secret", objects["client"]["client_secret"], 10002)
 for field in ("bootstrap_password", "migrator_password", "runtime_password"):
     write(f"secrets/database/{field}", objects["database"][field], 10001)
@@ -172,76 +333,148 @@ write("tls/redis-client/ca.crt", objects["redis"]["redis_ca_crt"], 10002)
 write("secrets/backup/repository_cipher", objects["backup"]["repository_cipher"], 65532)
 escaped = objects["database"]["bootstrap_password"].replace("\\", "\\\\").replace(":", "\\:")
 write("secrets/database/bootstrap.pgpass", f"postgres:5432:identity:identity_bootstrap:{escaped}\n", 10001)
-acl = "user default off\n" + f"user portfolio_bff reset on >{objects['redis']['bff_password']} " + "~reference-bff:production:portfolio:identity:* +ping +get +set +getdel +del +eval +client|setinfo\n"
+acl = "user default off\n" + f"user portfolio_bff reset on >{objects['redis']['bff_password']} ~reference-bff:production:portfolio:identity:* +ping +get +set +getdel +del +eval +client|setinfo\n"
 write("secrets/redis-server/users.acl", acl, 999)
 PY
 
 validate_server_identity() {
-  local directory="$1"
-  local hostname="$2"
-  openssl x509 -in "$directory/ca.crt" -noout >/dev/null 2>&1
+  local directory="$1" hostname="$2"
   openssl x509 -in "$directory/ca.crt" -noout -ext basicConstraints >"$work_root/ca-basic" 2>/dev/null
   openssl x509 -in "$directory/ca.crt" -noout -ext keyUsage >"$work_root/ca-usage" 2>/dev/null
   grep -Fq 'CA:TRUE' "$work_root/ca-basic"
   grep -Fq 'Certificate Sign' "$work_root/ca-usage"
-  openssl x509 -in "$directory/server.crt" -noout >/dev/null 2>&1
   openssl pkey -in "$directory/server.key" -noout >/dev/null 2>&1
   openssl verify -CAfile "$directory/ca.crt" "$directory/server.crt" >/dev/null 2>&1
   openssl x509 -in "$directory/server.crt" -checkhost "$hostname" -noout >/dev/null 2>&1
   openssl x509 -in "$directory/server.crt" -purpose -noout 2>/dev/null | grep -Fxq 'SSL server : Yes'
-  openssl x509 -in "$directory/server.crt" -noout -ext subjectAltName >"$work_root/san" 2>/dev/null
-  openssl x509 -in "$directory/server.crt" -noout -ext extendedKeyUsage >"$work_root/eku" 2>/dev/null
-  python3 - "$work_root/san" "$work_root/eku" "$hostname" 2>"$work_root/secret.stderr" <<'PY'
-import pathlib
-import re
-import sys
-san = pathlib.Path(sys.argv[1]).read_text(encoding="ascii")
-eku = pathlib.Path(sys.argv[2]).read_text(encoding="ascii")
-if re.findall(r"DNS:([^,\s]+)", san) != [sys.argv[3]] or "IP Address:" in san:
-    raise SystemExit(2)
-purposes = [item.strip() for item in eku.splitlines()[1:] if item.strip()]
-if purposes != ["TLS Web Server Authentication"]:
-    raise SystemExit(2)
-PY
   openssl x509 -in "$directory/server.crt" -pubkey -noout 2>/dev/null | sha256sum | cut -d' ' -f1 >"$work_root/cert.pub"
   openssl pkey -in "$directory/server.key" -pubout 2>/dev/null | sha256sum | cut -d' ' -f1 >"$work_root/key.pub"
   cmp -s "$work_root/cert.pub" "$work_root/key.pub"
 }
-validate_server_identity "$generation/tls/postgres-server" postgres
-validate_server_identity "$generation/tls/redis-server" redis
+validate_server_identity "$staged_generation/tls/postgres-server" postgres
+validate_server_identity "$staged_generation/tls/redis-server" redis
 
-write_b64 '${systemd_unit_b64}' "$work_root/identity-stack.service" 0644
-write_b64 '${verify_release_b64}' "$work_root/identity-verify-release" 0755
-write_b64 '${health_verify_b64}' "$work_root/identity-health-verify" 0755
-write_b64 '${pgbackrest_sidecar_b64}' "$work_root/pgbackrest-sidecar" 0755
-write_b64 '${docker_service_b64}' "$work_root/docker.service" 0644
-install -m 0644 "$work_root/identity-stack.service" /etc/systemd/system/identity-stack.service
-install -m 0644 "$work_root/docker.service" /etc/systemd/system/docker.service
-install -m 0755 "$work_root/identity-verify-release" /usr/local/libexec/platform/identity-verify-release
-install -m 0755 "$work_root/identity-health-verify" /usr/local/libexec/platform/identity-health-verify
-install -m 0755 "$work_root/pgbackrest-sidecar" /usr/local/libexec/platform/pgbackrest-sidecar
+write_b64 '${systemd_unit_b64}' "$work_root/active/etc/systemd/system/identity-stack.service" 0644
+write_b64 '${verify_release_b64}' "$work_root/active/usr/local/libexec/platform/identity-verify-release" 0755
+write_b64 '${health_verify_b64}' "$work_root/active/usr/local/libexec/platform/identity-health-verify" 0755
+write_b64 '${pgbackrest_sidecar_b64}' "$work_root/active/usr/local/libexec/platform/pgbackrest-sidecar" 0755
+write_b64 '${docker_service_b64}' "$work_root/active/etc/systemd/system/docker.service" 0644
+bash -n "$work_root/active/usr/local/libexec/platform/identity-verify-release"
+bash -n "$work_root/active/usr/local/libexec/platform/identity-health-verify"
+bash -n "$work_root/active/usr/local/libexec/platform/pgbackrest-sidecar"
+"$work_root/active/usr/local/bin/docker" --version >/dev/null
+"$work_root/active/usr/local/lib/docker/cli-plugins/docker-compose" version >/dev/null
+systemd-analyze verify "$work_root/active/etc/systemd/system/docker.service" "$work_root/active/etc/systemd/system/identity-stack.service" >/dev/null
 
-rm -f -- "$work_root"/*.json "$work_root"/*.stderr "$work_root"/*.pub "$work_root"/san "$work_root"/eku "$work_root"/ca-basic "$work_root"/ca-usage
+python3 - "$staged_generation" "$work_root/active" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+for root_name in sys.argv[1:]:
+    root = pathlib.Path(root_name)
+    for path in root.rglob("*"):
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode) or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise SystemExit(2)
+        if info.st_uid != 0:
+            raise SystemExit(2)
+for path in (pathlib.Path(sys.argv[1]) / "secrets").rglob("*"):
+    if path.is_file() and stat.S_IMODE(path.stat().st_mode) != 0o440:
+        raise SystemExit(2)
+PY
+
+mapfile -t staged_files < <(find "$work_root/active" -type f -print | LC_ALL=C sort)
+all_active_equal=true
+for source in "$${staged_files[@]}"; do
+  target="/$${source#"$work_root/active/"}"
+  if [[ ! -f "$target" || -L "$target" ]] || ! cmp -s "$source" "$target"; then
+    all_active_equal=false
+  fi
+done
+
+current_generation=""
+if [[ -L "$active_generation" ]]; then
+  current_generation="$(readlink -f -- "$active_generation")"
+  [[ "$current_generation" == "$generation_root"/* && -d "$current_generation" && ! -L "$current_generation" ]]
+fi
+generation_equal=false
+if [[ -n "$current_generation" ]]; then
+  if python3 - "$staged_generation" "$current_generation" <<'PY'
+import filecmp
+import os
+import pathlib
+import stat
+import sys
+left, right = map(pathlib.Path, sys.argv[1:])
+def inventory(root):
+    result = {}
+    for path in root.rglob("*"):
+        relative = path.relative_to(root).as_posix()
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise SystemExit(2)
+        result[relative] = (stat.S_IFMT(info.st_mode), stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid, info.st_size if path.is_file() else None)
+    return result
+if inventory(left) != inventory(right):
+    raise SystemExit(1)
+for path in left.rglob("*"):
+    if path.is_file() and not filecmp.cmp(path, right / path.relative_to(left), shallow=False):
+        raise SystemExit(1)
+PY
+  then generation_equal=true; fi
+fi
+
+docker_enabled=false; stack_enabled=false
+[[ "$(systemctl is-enabled docker.service 2>/dev/null || true)" == enabled ]] && docker_enabled=true
+[[ "$(systemctl is-enabled identity-stack.service 2>/dev/null || true)" == enabled ]] && stack_enabled=true
+if [[ "$all_active_equal" == true && "$generation_equal" == true && "$docker_enabled" == true && "$stack_enabled" == true ]]; then
+  rm -rf -- "$work_root"/*
+  trap - ERR
+  printf 'Identity runtime configuration already matches the active generation; no services changed.\n'
+  exit 0
+fi
+
+if systemctl is-active --quiet identity-stack.service; then
+  printf 'Active Identity workload requires a separately reviewed host maintenance operation.\n' >&2
+  exit 1
+fi
+
+register_directory /opt/platform 0755
+register_directory /opt/platform/identity 0755
+register_directory /opt/platform/identity/releases 0755
+register_directory /usr/local/lib/docker 0755
+register_directory /usr/local/lib/docker/cli-plugins 0755
+register_directory /usr/local/libexec 0755
+register_directory /usr/local/libexec/platform 0755
+register_directory /etc/systemd/system 0755
+register_directory "$generation_root" 0700
+
+if [[ -L "$active_generation" ]]; then previous_generation="$(readlink -- "$active_generation")"; elif [[ -e "$active_generation" ]]; then exit 1; fi
+systemctl is-enabled --quiet docker.service 2>/dev/null && docker_was_enabled=true || true
+systemctl is-enabled --quiet identity-stack.service 2>/dev/null && stack_was_enabled=true || true
+systemctl is-active --quiet docker.service && docker_was_active=true || true
+systemctl is-active --quiet identity-stack.service && stack_was_active=true || true
+for source in "$${staged_files[@]}"; do
+  target="/$${source#"$work_root/active/"}"
+  snapshot_target "$target"
+done
+
+transaction_started=true
+mv -- "$staged_generation" "$generation"
+for source in "$${staged_files[@]}"; do
+  target="/$${source#"$work_root/active/"}"
+  mode="$(stat -c '%a' "$source")"
+  atomic_file "$source" "$target" "$mode"
+done
+atomic_link "identity-generations/$generation_name" "$active_generation"
 systemctl daemon-reload
 systemctl enable docker.service identity-stack.service
 systemctl start docker.service
 [[ "$(systemctl is-enabled identity-stack.service)" == enabled ]]
 ! systemctl is-active --quiet identity-stack.service
-current_generation=""
-if [[ -L /etc/platform/identity ]]; then
-  current_generation="$(readlink -f -- /etc/platform/identity)"
-  [[ "$current_generation" == "$generation_root"/* ]]
-fi
-while IFS= read -r obsolete_generation; do
-  [[ "$obsolete_generation" == "$generation_root"/* ]]
-  [[ "$obsolete_generation" != "$current_generation" && "$obsolete_generation" != "$generation" ]]
-  rm -rf -- "$obsolete_generation"
-done < <(find "$generation_root" -mindepth 1 -maxdepth 1 -type d -print)
-find "$work_root" -maxdepth 1 -type f -delete
-rm -rf -- "$work_root/docker"
-rm -f -- /etc/platform/.identity.next
-ln -s "identity-generations/$(basename -- "$generation")" /etc/platform/.identity.next
-mv -Tf -- /etc/platform/.identity.next /etc/platform/identity
-activated=true
+transaction_committed=true
+
+rm -rf -- "$work_root"/*
 trap - ERR
 printf 'Identity runtime source configured transactionally; no workload was started.\n'

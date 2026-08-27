@@ -49,16 +49,25 @@ Secret values are never committed. The four host-readable secret schemas are nam
 - Backup: `repository_cipher`.
 - Google OAuth: `client_id` and `client_secret`; never host-readable.
 
-Secrets are fetched only by exact ARN in the fixed configure document, captured without tracing,
-validated together with duplicate-key rejection, and activated through one atomic generation
-symlink as root-owned, single-service-group-readable files. PostgreSQL clients require TCP with
+Secrets are fetched only by exact ARN in the fixed configure document and captured without tracing.
+Configuration holds the same exclusive lifecycle lock as deploy and rollback, stages every
+download, executable, unit, helper, generated file, secret, TLS identity, owner, and mode, and
+validates the complete candidate before an adjacent atomic rename can affect an active path. It
+retains the prior generation and exact global objects until success, restores all of them on any
+failure, and removes raw staging material. An identical rerun is a no-op without a service stop or
+restart; a host-global binary or unit upgrade while Identity is active fails before any active
+write. Secret files are root-owned, single-service-group-readable files selected by one atomic
+generation symlink. PostgreSQL clients require TCP with
 `sslmode=verify-full`. The BFF constructs a process-local public/private CA bundle in tmpfs and
 requires server-authenticated `rediss://` with ACL user `portfolio_bff`, no client certificate,
 and exact key namespace `reference-bff:production:portfolio:identity`.
 
-PostgreSQL has distinct bootstrap, no-login owner, login `identity_service_migrator`, and login
-`identity_service_app` roles. The published migration script applies exact table and column grants;
-the runtime role receives no destructive, DDL, ownership, or role-escalation permission. Migrations
+PostgreSQL has a `NOLOGIN NOINHERIT` owner, a `LOGIN INHERIT` migrator, and a `LOGIN NOINHERIT`
+runtime role; all three are non-superuser, non-createdb, non-createrole, non-replication, and
+non-bypass-RLS. Bootstrap repairs role, membership, schema-ownership, and grant drift, removes
+PUBLIC database/schema privileges, and then audits the exact current-head table, sequence, and
+column privilege inventory after the published migration. The runtime role owns nothing, belongs
+to no role, and receives no destructive, DDL, ownership, or role-escalation permission. Migrations
 must reach exact head `0001_initial_identity_schema` before activation. Redis is BFF-only session and
 OAuth-transaction state, uses TTL-compatible eviction, and has persistence disabled. Redis loss
 invalidates sessions and requires reauthentication; no recovery claim is made. Recovery design is
@@ -69,9 +78,20 @@ deferred to future task `PLATFORM-P4-REDIS-RECOVERY-DESIGN-001`.
 pgBackRest continuously consumes the PostgreSQL WAL spool into the existing versioned/encrypted
 backup bucket under `identity/production`, with encrypted repository material, weekly full and
 six-day differential schedules, four-full/fourteen-differential retention, freshness metrics, and
-an isolated restore rehearsal operation. Each rehearsal starts a portless restored PostgreSQL,
-checks the exact head and deterministic content, and removes its container and private directory.
+an isolated restore rehearsal operation. Before each backup, the operation commits a non-secret
+recovery marker in an access-denied control schema and binds that marker and timestamp to bounded,
+mode-0600 backup metadata. An immediate restore must select the latest successful marker; a
+time-target restore must select an eligible marker at or before the target or fail closed. Each
+rehearsal starts a portless restored PostgreSQL, proves the exact migration head and the marker that
+existed before its selected backup, rejects marker visibility to the application role, and removes
+its container and private directory.
 EBS/DLM remains crash-consistent host recovery only.
+
+Deploy and rollback validate their target release before switching and constrain the release
+verifier to the release root and exact metadata contract. Once activation begins, any Nginx,
+systemd, verifier, or health failure restores the exact prior links, environment, Nginx
+configuration, and service state, restarts the prior release, and proves it healthy. The previous
+link is promoted only after the candidate is healthy.
 
 The design objectives are RPO no greater than 24 hours and RTO no greater than 4 hours. They are
 objectives pending live activation and repeated restore evidence, not achieved guarantees.

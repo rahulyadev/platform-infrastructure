@@ -37,6 +37,7 @@ release = read("deploy/ssm/verify-identity-release.sh")
 verify = read("deploy/ssm/verify-identity.sh")
 restore = read("deploy/ssm/restore-identity.sh")
 rollback = read("deploy/ssm/rollback-identity.sh")
+backup = read("deploy/ssm/backup-identity.sh")
 documents = read("infra/modules/identity_production/documents.tf")
 iam = read("infra/modules/identity_production/iam.tf")
 monitoring = read("infra/modules/identity_production/monitoring.tf")
@@ -94,12 +95,16 @@ for forbidden in ("65532:65532", "DATABASE_HOST:", "COGNITO_JWKS_URI:", "COGNITO
     require(forbidden not in compose)
 
 for fixed in (
-    "identity_service_owner NOLOGIN",
-    "identity_service_migrator LOGIN INHERIT",
-    "identity_service_app LOGIN NOINHERIT",
+    "identity_service_owner NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    "identity_service_migrator LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
+    "identity_service_app LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
     "CREATE SCHEMA IF NOT EXISTS identity AUTHORIZATION identity_service_owner",
     "GRANT USAGE ON SCHEMA identity TO identity_service_app",
-    "GRANT identity_service_owner TO identity_service_migrator",
+    "GRANT identity_service_owner TO identity_service_migrator WITH INHERIT TRUE, SET TRUE",
+    "identity runtime table privilege contract mismatch",
+    "identity runtime column privilege contract mismatch",
+    "identity_service_app'::regrole",
+    "IDENTITY_POST_MIGRATION_AUDIT",
 ):
     require(fixed in roles)
 for forbidden in ("identity_migrator", "identity_runtime", "GRANT SELECT, INSERT, UPDATE ON TABLES", "ALTER DEFAULT PRIVILEGES"):
@@ -113,13 +118,22 @@ for fixed in (
     "openssl verify -CAfile",
     "-checkhost \"$hostname\"",
     "SSL server : Yes",
+    "platform-identity-lifecycle.lock",
+    "identity-generations/$generation_name",
     "systemctl enable docker.service identity-stack.service",
     "! systemctl is-active --quiet identity-stack.service",
-    "mv -Tf -- /etc/platform/.identity.next /etc/platform/identity",
+    "Active Identity workload requires a separately reviewed host maintenance operation.",
+    "Identity runtime configuration already matches the active generation; no services changed.",
+    "restore_transaction",
 ):
     require(fixed in configure)
 require("bff_runtime_secret_arn" not in configure and "cookie_encryption" not in configure)
 require(configure.count("fetch_secret \"") == 4)
+for lifecycle_script in (configure, deploy, rollback):
+    require("platform-identity-lifecycle.lock" in lifecycle_script)
+require("rm -rf -- \"$obsolete_generation\"" not in configure)
+require(configure.index("systemd-analyze verify") < configure.index("transaction_started=true"))
+require(configure.index("validate_server_identity") < configure.index("transaction_started=true"))
 for purpose_path in ("secrets/redis-server", "secrets/redis-client", "tls/redis-server", "tls/redis-client", "tls/postgres-server", "tls/postgres-client"):
     require(purpose_path in configure)
 
@@ -138,6 +152,16 @@ for forbidden in ("migrator check", "COGNITO_AUDIENCE=", "BFF_ORIGIN=%s", "docke
     require(forbidden not in deploy)
 require(deploy.count("run --rm migrator") == 1)
 require(deploy.index("run --rm migrator") < deploy.index("SELECT version_num FROM identity.alembic_version"))
+for fixed in (
+    "activate_release",
+    "restore_prior_release",
+    '"$verify_release" "$release"',
+    "previous_promotion",
+    "platform_recovery.markers",
+    "IDENTITY_POST_MIGRATION_AUDIT=1",
+):
+    require(fixed in deploy)
+require(deploy.index('"$health_verify"') < deploy.rindex('atomic_link "$old_target" "$previous"'))
 
 require("declare -A release=()" in release and '[[ "${#release[@]}" == 13 ]]' in release)
 require("600:0:0" in release and "arm64/linux" in release)
@@ -151,9 +175,14 @@ require("SELECT version_num FROM identity.alembic_version" in verify)
 
 require("mktemp -d /var/lib/platform/identity-restore-rehearsal.XXXXXXXX" in restore)
 require("docker rm -f \"$container\"" in restore and 'rm -rf -- "$restore_root"' in restore)
-require("0001_initial_identity_schema" in restore and "restore-rehearsal-ok" in restore)
-require(rollback.index("live_schema=") < rollback.index('ln -s -- "$rollback_target"'))
+for fixed in ("platform_recovery.markers", "marker_created_at", "backup_label", "--set=\"$backup_label\"", "IDENTITY_SCHEMA_HEAD"):
+    require(fixed in restore or fixed in release)
+for fixed in ("restore_original", '"$verify_release" "$rollback_target"', "previous_promotion", "live_schema="):
+    require(fixed in rollback)
+require(rollback.index('"$health_verify"') < rollback.rindex('atomic_link "$original_target" "$previous"'))
 require("0001_initial_identity_schema" in rollback)
+for fixed in ("INSERT INTO platform_recovery.markers", "marker_created_at", "backup_label", "identity-backup-", "REVOKE ALL ON TABLE"):
+    require(fixed in backup)
 
 require('allowedPattern    = "^${replace(local.identity_api_repository_url' in documents)
 require('allowedPattern    = "^${replace(local.identity_bff_repository_url' in documents)

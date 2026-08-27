@@ -41,11 +41,20 @@ images=config/runtime/identity-images.json
 nginx=config/nginx/identity-runtime.conf.tftpl
 pgbackrest=config/runtime/pgbackrest.conf.tftpl
 production_document=docs/production-identity.md
+configure=deploy/ssm/configure-identity-runtime.sh.tftpl
+deploy=deploy/ssm/deploy-identity.sh
+rollback=deploy/ssm/rollback-identity.sh
+backup=deploy/ssm/backup-identity.sh
+restore=deploy/ssm/restore-identity.sh
+roles=config/runtime/postgres-roles.sql
+deployment_fixture=tests/deployment/check-identity.sh
+runtime_fixture=tests/runtime/check-identity-fixtures.sh
 
 for file in "$core_values" "$core_variables" "$core_outputs" "$runtime_values" "$runtime_variables" \
   "$runtime_outputs" "$authentication" "$custody" "$production_module/ecr.tf" \
   "$production_module/github_oidc.tf" "$production_module/iam.tf" \
-  "$production_module/documents.tf" "$production_module/monitoring.tf" "$compose" "$images" "$nginx" "$pgbackrest" "$production_document"; do
+  "$production_module/documents.tf" "$production_module/monitoring.tf" "$compose" "$images" "$nginx" "$pgbackrest" "$production_document" \
+  "$configure" "$deploy" "$rollback" "$backup" "$restore" "$roles" "$deployment_fixture" "$runtime_fixture"; do
   [[ -f "$file" ]] || fail "a required production Identity source file is missing"
 done
 ((failures == 0)) || exit 1
@@ -214,6 +223,42 @@ reject 'migrator check|command: \[migrate' deploy/ssm/deploy-identity.sh \
 require_fixed deploy/ssm/backup-identity.sh 'pgbackrest' "backup must use pgBackRest"
 require_fixed deploy/ssm/restore-identity.sh 'identity-restore-rehearsal' \
   "restore must target an isolated rehearsal directory"
+for lifecycle_file in "$configure" "$deploy" "$rollback"; do
+  require_fixed "$lifecycle_file" 'platform-identity-lifecycle.lock' \
+    "configure, deploy, and rollback must share one exclusive lifecycle lock"
+done
+require_fixed "$configure" '--transaction-fixture' \
+  "host configuration must retain its executable failure-atomic fixture"
+require_fixed "$configure" 'rejected active host-global drift' \
+  "host-global upgrades must fail closed while Identity is active"
+require_fixed "$configure" 'already matches the active generation; no services changed' \
+  "identical host configuration must remain a no-op"
+require_fixed "$deploy" 'restore_prior_release' \
+  "deployment must automatically restore and re-verify prior health"
+require_fixed "$rollback" 'restore_original' \
+  "rollback must automatically restore and re-verify original health"
+require_fixed "$deploy" 'previous_promotion' \
+  "deployment may promote the old release only after new health succeeds"
+require_fixed "$roles" 'NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS' \
+  "the PostgreSQL owner role must retain exact negative attributes"
+require_fixed "$roles" 'LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS' \
+  "the PostgreSQL migrator role must retain exact attributes"
+require_fixed "$roles" 'LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS' \
+  "the PostgreSQL runtime role must retain exact attributes"
+require_fixed "$roles" 'IDENTITY_POST_MIGRATION_AUDIT' \
+  "deployment must retain the exact current-head privilege audit"
+require_fixed "$backup" 'platform_recovery.markers' \
+  "backup must record its recovery marker before pgBackRest runs"
+require_fixed "$restore" '--metadata-fixture' \
+  "restore marker selection must retain an executable metadata fixture"
+require_fixed "$restore" 'record[0] <= target and record[1] <= target' \
+  "time-target restore must reject a marker newer than its target"
+require_fixed "$runtime_fixture" 'pre_backup_marker_persistence' \
+  "the packed fixture must prove marker persistence before backup"
+require_fixed "$runtime_fixture" 'docker exec --interactive --env PGPASSWORD="$bootstrap_password" "$postgres"' \
+  "the packed fixture must actually execute its stdin-fed recovery SQL"
+require_fixed "$deployment_fixture" 'previous_promotion' \
+  "executable lifecycle proof must include the post-health promotion boundary"
 require_fixed deploy/ssm/enable-identity-tls.sh 'identity.rahuly.in' \
   "the fixed Identity TLS operation must target only the exact API hostname"
 require_fixed "$production_module/documents.tf" 'schedule_expression         = "rate(30 minutes)"' \
