@@ -31,13 +31,16 @@ grep -Fq 'Dimensions=[{Name=InstanceId' deploy/ssm/verify-identity.sh deploy/ssm
 
 make_configuration_root() {
   local root="$1"
-  install -d -m 0700 "$root" "$root/stage" "$root/active" "$root/active/generations/old" "$root/active/generations/new"
+  install -d -m 0700 "$root" "$root/stage"
+  install -d -m 0755 "$root/active" "$root/active/generations" "$root/active/generations/old" "$root/active/generations/new"
   printf 'new-binary\n' >"$root/stage/global-binary"
   printf 'new-unit\n' >"$root/stage/global-unit"
   printf 'new-generation\n' >"$root/stage/generation"
   printf 'old-binary\n' >"$root/active/global-binary"
   printf 'old-unit\n' >"$root/active/global-unit"
   printf 'disabled\n' >"$root/active/enablement"
+  chmod 0644 "$root/active/global-binary" "$root/active/global-unit"
+  chmod 0600 "$root/active/enablement"
   ln -s generations/old "$root/active/generation-link"
 }
 
@@ -81,12 +84,112 @@ grep -Fxq new-binary "$root/active/global-binary"
 grep -Fxq new-unit "$root/active/global-unit"
 grep -Fxq enabled "$root/active/enablement"
 [[ "$(readlink -- "$root/active/generation-link")" == generations/new ]]
-before="$(stat -c '%i:%Y' "$root/active/global-binary" "$root/active/global-unit" "$root/active/enablement" "$root/active/generation-link")"
+before="$(stat -c '%i:%Y' "$root/active" "$root/active/global-binary" "$root/active/global-unit" "$root/active/enablement" "$root/active/generation-link")"
 PLATFORM_IDENTITY_CONFIGURATION_TEST_ROOT="$root" PLATFORM_IDENTITY_FAIL_AT=none \
   PLATFORM_IDENTITY_FIXTURE_WORKLOAD_ACTIVE=true \
   bash deploy/ssm/configure-identity-runtime.sh.tftpl --transaction-fixture >/dev/null
-after="$(stat -c '%i:%Y' "$root/active/global-binary" "$root/active/global-unit" "$root/active/enablement" "$root/active/generation-link")"
+after="$(stat -c '%i:%Y' "$root/active" "$root/active/global-binary" "$root/active/global-unit" "$root/active/enablement" "$root/active/generation-link")"
 [[ "$before" == "$after" ]]
+
+root="$temporary/config-file-mode-drift"
+make_configuration_root "$root"
+PLATFORM_IDENTITY_CONFIGURATION_TEST_ROOT="$root" PLATFORM_IDENTITY_FAIL_AT=none \
+  PLATFORM_IDENTITY_FIXTURE_WORKLOAD_ACTIVE=false \
+  bash deploy/ssm/configure-identity-runtime.sh.tftpl --transaction-fixture >/dev/null
+chmod 0664 "$root/active/global-binary"
+before="$(stat -c '%i:%Y:%a:%u:%g' "$root/active/global-binary")"
+if PLATFORM_IDENTITY_CONFIGURATION_TEST_ROOT="$root" PLATFORM_IDENTITY_FAIL_AT=none \
+  PLATFORM_IDENTITY_FIXTURE_WORKLOAD_ACTIVE=true \
+  bash deploy/ssm/configure-identity-runtime.sh.tftpl --transaction-fixture >"$temporary/config.out" 2>&1; then
+  printf 'Identity configuration fixture accepted active-file metadata drift.\n' >&2
+  exit 1
+fi
+after="$(stat -c '%i:%Y:%a:%u:%g' "$root/active/global-binary")"
+[[ "$before" == "$after" ]]
+[[ ! -e "$root/rollback" ]]
+! find "$root/active" -maxdepth 1 -name '*.next' -print -quit | grep -q .
+
+root="$temporary/config-directory-mode-drift"
+make_configuration_root "$root"
+PLATFORM_IDENTITY_CONFIGURATION_TEST_ROOT="$root" PLATFORM_IDENTITY_FAIL_AT=none \
+  PLATFORM_IDENTITY_FIXTURE_WORKLOAD_ACTIVE=false \
+  bash deploy/ssm/configure-identity-runtime.sh.tftpl --transaction-fixture >/dev/null
+chmod 0775 "$root/active"
+before="$(stat -c '%i:%Y:%a:%u:%g' "$root/active")"
+if PLATFORM_IDENTITY_CONFIGURATION_TEST_ROOT="$root" PLATFORM_IDENTITY_FAIL_AT=none \
+  PLATFORM_IDENTITY_FIXTURE_WORKLOAD_ACTIVE=true \
+  bash deploy/ssm/configure-identity-runtime.sh.tftpl --transaction-fixture >"$temporary/config.out" 2>&1; then
+  printf 'Identity configuration fixture accepted parent-directory metadata drift.\n' >&2
+  exit 1
+fi
+after="$(stat -c '%i:%Y:%a:%u:%g' "$root/active")"
+[[ "$before" == "$after" ]]
+[[ ! -e "$root/rollback" ]]
+! find "$root/active" -maxdepth 1 -name '*.next' -print -quit | grep -q .
+
+make_release_metadata_root() {
+  local root="$1"
+  install -d -m 0700 "$root"
+  install -d -m 0755 "$root/releases" "$root/releases/candidate"
+  printf 'fixture\n' >"$root/releases/candidate/release.env"
+  printf 'services: {}\n' >"$root/releases/candidate/compose.yml"
+  chmod 0600 "$root/releases/candidate/release.env"
+  chmod 0644 "$root/releases/candidate/compose.yml"
+}
+
+expect_release_metadata_failure() {
+  local root="$1"
+  if PLATFORM_IDENTITY_RELEASE_TEST_ROOT="$root" \
+    bash deploy/ssm/verify-identity-release.sh --metadata-fixture "$root/releases/candidate" \
+    >"$temporary/release-metadata.out" 2>&1; then
+    printf 'Identity release metadata fixture accepted injected drift.\n' >&2
+    exit 1
+  fi
+  grep -Fxq 'Identity release verification failed safely.' "$temporary/release-metadata.out"
+  : >"$temporary/release-metadata.out"
+}
+
+root="$temporary/release-metadata-valid"
+make_release_metadata_root "$root"
+PLATFORM_IDENTITY_RELEASE_TEST_ROOT="$root" \
+  bash deploy/ssm/verify-identity-release.sh --metadata-fixture "$root/releases/candidate" >/dev/null
+
+root="$temporary/release-parent-mode-drift"
+make_release_metadata_root "$root"
+chmod 0775 "$root/releases"
+expect_release_metadata_failure "$root"
+
+root="$temporary/release-root-mode-drift"
+make_release_metadata_root "$root"
+chmod 0775 "$root/releases/candidate"
+expect_release_metadata_failure "$root"
+
+root="$temporary/release-extra-member"
+make_release_metadata_root "$root"
+printf 'unexpected\n' >"$root/releases/candidate/unreviewed"
+expect_release_metadata_failure "$root"
+
+root="$temporary/release-file-mode-drift"
+make_release_metadata_root "$root"
+chmod 0664 "$root/releases/candidate/compose.yml"
+expect_release_metadata_failure "$root"
+
+root="$temporary/release-file-group-drift"
+make_release_metadata_root "$root"
+if PLATFORM_IDENTITY_RELEASE_TEST_ROOT="$root" PLATFORM_IDENTITY_RELEASE_TEST_EXPECTED_FILE_GID=65534 \
+  bash deploy/ssm/verify-identity-release.sh --metadata-fixture "$root/releases/candidate" \
+  >"$temporary/release-metadata.out" 2>&1; then
+  printf 'Identity release metadata fixture accepted wrong file group metadata.\n' >&2
+  exit 1
+fi
+grep -Fxq 'Identity release verification failed safely.' "$temporary/release-metadata.out"
+: >"$temporary/release-metadata.out"
+
+root="$temporary/release-file-type-drift"
+make_release_metadata_root "$root"
+rm -f -- "$root/releases/candidate/compose.yml"
+ln -s release.env "$root/releases/candidate/compose.yml"
+expect_release_metadata_failure "$root"
 
 make_activation_root() {
   local root="$1" current_name="$2" previous_name="$3"

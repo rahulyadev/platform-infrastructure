@@ -44,6 +44,7 @@ monitoring = read("infra/modules/identity_production/monitoring.tf")
 module_variables = read("infra/modules/identity_production/variables.tf")
 runtime_variables = read("infra/live/production/runtime/variables.tf")
 nginx = read("config/nginx/identity-runtime.conf.tftpl")
+runtime_fixture = read("tests/runtime/check-identity-fixtures.sh")
 
 for fixed in (
     'API_UID = 10001',
@@ -100,7 +101,10 @@ for fixed in (
     "identity_service_app LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS",
     "CREATE SCHEMA IF NOT EXISTS identity AUTHORIZATION identity_service_owner",
     "GRANT USAGE ON SCHEMA identity TO identity_service_app",
-    "GRANT identity_service_owner TO identity_service_migrator WITH INHERIT TRUE, SET TRUE",
+    "GRANT identity_service_owner TO identity_service_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE",
+    "NOT membership.admin_option",
+    "membership.inherit_option",
+    "membership.set_option",
     "identity runtime table privilege contract mismatch",
     "identity runtime column privilege contract mismatch",
     "identity_service_app'::regrole",
@@ -124,6 +128,10 @@ for fixed in (
     "! systemctl is-active --quiet identity-stack.service",
     "Active Identity workload requires a separately reviewed host maintenance operation.",
     "Identity runtime configuration already matches the active generation; no services changed.",
+    "managed_directory_specs",
+    "source_metadata=\"$(stat -c '%a:%u:%g' \"$source\")\"",
+    "all_directories_equal",
+    "rejected parent-directory metadata drift",
     "restore_transaction",
 ):
     require(fixed in configure)
@@ -164,9 +172,25 @@ for fixed in (
 require(deploy.index('"$health_verify"') < deploy.rindex('atomic_link "$old_target" "$previous"'))
 
 require("declare -A release=()" in release and '[[ "${#release[@]}" == 13 ]]' in release)
-require("600:0:0" in release and "arm64/linux" in release)
+require('[[ "${#candidate_inventory[@]}" == 2 ]]' in release)
+require('[[ "${candidate_inventory[0]}" == compose.yml:f ]]' in release)
+require('[[ "${candidate_inventory[1]}" == release.env:f ]]' in release)
+require('"600:$expected_file_uid:$expected_file_gid"' in release and '"644:$expected_file_uid:$expected_file_gid"' in release)
+require('"755:$expected_uid:$expected_gid"' in release and "arm64/linux" in release)
 require("REDIS_KEY_NAMESPACE" in release and "IDENTITY_SCHEMA_HEAD" in release)
 require("source \"$release_file\"" not in release)
+
+for fixed in (
+    "b7bfb6e29824326a9a354bf3c7d0fe6988d0117a",
+    "git diff --quiet c9e25c0e028f35f7d27297e1e0bdd90f77c2c107",
+    "config/runtime/identity-launcher.py",
+    "config/runtime/identity-compose.yml.tftpl",
+    "postgres_owner_inherit_drift",
+    "postgres_owner_membership_drift",
+    "postgres_membership_admin_option_drift",
+    "identity_service_owner:identity_service_migrator:t:t:t",
+):
+    require(fixed in runtime_fixture)
 
 for command in ("GET", "SET", "GETDEL", "DEL", "EVAL"):
     require(command in verify)

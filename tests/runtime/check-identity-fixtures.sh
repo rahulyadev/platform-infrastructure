@@ -10,6 +10,121 @@ docker info >/dev/null 2>&1 || {
   printf 'Identity Docker fixtures require an available local Docker daemon.\n' >&2
   exit 1
 }
+
+if [[ -n "${IDENTITY_TASK003_PACKED_RESULT_OBJECT:-}" ]]; then
+  [[ "$IDENTITY_TASK003_PACKED_RESULT_OBJECT" == b7bfb6e29824326a9a354bf3c7d0fe6988d0117a ]]
+  unchanged_packed_inputs=(
+    config/runtime/identity-compose.yml.tftpl
+    config/runtime/identity-images.json
+    config/runtime/identity-launcher.py
+    config/runtime/pgbackrest.conf.tftpl
+    deploy/ssm/backup-identity.sh
+    deploy/ssm/restore-identity.sh
+  )
+  git diff --quiet c9e25c0e028f35f7d27297e1e0bdd90f77c2c107 -- "${unchanged_packed_inputs[@]}"
+
+  role_fixture="platform-p3i4-role-metadata-$$"
+  role_temporary="$(mktemp -d)"
+  chmod 0700 "$role_temporary"
+  role_cleanup() {
+    docker rm -f "$role_fixture" >/dev/null 2>&1 || true
+    chmod -R u+rwX "$role_temporary" >/dev/null 2>&1 || true
+    rm -rf -- "$role_temporary"
+  }
+  trap role_cleanup EXIT
+  install -d -m 0700 "$role_temporary/database"
+  printf 'fixture-migrator-password\n' >"$role_temporary/database/migrator_password"
+  printf 'fixture-runtime-password\n' >"$role_temporary/database/runtime_password"
+  chmod 0444 "$role_temporary/database/migrator_password" "$role_temporary/database/runtime_password"
+  chmod 0555 "$role_temporary/database"
+
+  role_postgres_image='postgres@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636'
+  docker run --detach --name "$role_fixture" --network none \
+    --mount "type=bind,src=$role_temporary/database,dst=/run/secrets/database,readonly" \
+    --env POSTGRES_DB=identity --env POSTGRES_USER=identity_bootstrap \
+    --env POSTGRES_HOST_AUTH_METHOD=trust "$role_postgres_image" >/dev/null
+  for _ in {1..60}; do
+    if docker exec "$role_fixture" pg_isready --dbname identity --username identity_bootstrap >/dev/null 2>&1; then break; fi
+    sleep 1
+  done
+  docker exec "$role_fixture" pg_isready --dbname identity --username identity_bootstrap >/dev/null
+
+  run_role_sql() {
+    docker exec --interactive --env PGOPTIONS=-cclient_min_messages=warning "$role_fixture" \
+      psql --username identity_bootstrap --dbname identity --quiet \
+      --no-psqlrc --set ON_ERROR_STOP=1 "$@"
+  }
+  expect_role_contract_failure() {
+    local mode="$1"
+    local -a arguments=()
+    if [[ "$mode" == audit ]]; then arguments+=(--set IDENTITY_POST_MIGRATION_AUDIT=1); fi
+    if run_role_sql "${arguments[@]}" <config/runtime/postgres-roles.sql \
+      >"$role_temporary/rejected.out" 2>&1; then
+      printf 'Identity PostgreSQL role-metadata fixture accepted injected drift.\n' >&2
+      exit 1
+    fi
+    chmod 0600 "$role_temporary/rejected.out"
+    : >"$role_temporary/rejected.out"
+  }
+
+  run_role_sql <config/runtime/postgres-roles.sql >/dev/null
+  run_role_sql <config/runtime/postgres-roles.sql >/dev/null
+  run_role_sql <<'SQL' >/dev/null
+SET ROLE identity_service_owner;
+CREATE TABLE identity.alembic_version(version_num text NOT NULL);
+CREATE TABLE identity.profiles(
+  display_name_override text,
+  provider_avatar_url text,
+  provider_display_name text,
+  provider_email text,
+  provider_email_verified boolean,
+  updated_at timestamptz,
+  version integer
+);
+CREATE TABLE identity.provider_identities(
+  claims_synced_at timestamptz,
+  last_auth_time timestamptz,
+  last_seen_at timestamptz
+);
+CREATE TABLE identity.users(value text);
+RESET ROLE;
+INSERT INTO identity.alembic_version(version_num) VALUES ('0001_initial_identity_schema');
+GRANT SELECT ON identity.alembic_version TO identity_service_app;
+GRANT INSERT, SELECT ON identity.profiles, identity.provider_identities, identity.users TO identity_service_app;
+GRANT UPDATE (
+  display_name_override, provider_avatar_url, provider_display_name, provider_email,
+  provider_email_verified, updated_at, version
+) ON identity.profiles TO identity_service_app;
+GRANT UPDATE (claims_synced_at, last_auth_time, last_seen_at)
+  ON identity.provider_identities TO identity_service_app;
+SQL
+  run_role_sql --set IDENTITY_POST_MIGRATION_AUDIT=1 <config/runtime/postgres-roles.sql >/dev/null
+
+  run_role_sql --command 'ALTER ROLE identity_service_owner INHERIT;' >/dev/null
+  expect_role_contract_failure bootstrap
+  expect_role_contract_failure audit
+  run_role_sql --command 'ALTER ROLE identity_service_owner NOINHERIT;' >/dev/null
+
+  run_role_sql --command 'CREATE ROLE identity_fixture_extra NOLOGIN; GRANT identity_fixture_extra TO identity_service_owner;' >/dev/null
+  expect_role_contract_failure bootstrap
+  expect_role_contract_failure audit
+  run_role_sql --command 'REVOKE identity_fixture_extra FROM identity_service_owner; DROP ROLE identity_fixture_extra;' >/dev/null
+
+  run_role_sql --command 'GRANT identity_service_owner TO identity_service_migrator WITH ADMIN OPTION;' >/dev/null
+  expect_role_contract_failure bootstrap
+  expect_role_contract_failure audit
+  run_role_sql --command 'GRANT identity_service_owner TO identity_service_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;' >/dev/null
+
+  run_role_sql <config/runtime/postgres-roles.sql >/dev/null
+  run_role_sql --set IDENTITY_POST_MIGRATION_AUDIT=1 <config/runtime/postgres-roles.sql >/dev/null
+  role_graph="$(run_role_sql --tuples-only --no-align --command \
+    "SELECT concat_ws(':', granted.rolname, member.rolname, NOT membership.admin_option, membership.inherit_option, membership.set_option) FROM pg_auth_members membership JOIN pg_roles granted ON granted.oid = membership.roleid JOIN pg_roles member ON member.oid = membership.member WHERE granted.rolname IN ('identity_service_owner','identity_service_migrator','identity_service_app') OR member.rolname IN ('identity_service_owner','identity_service_migrator','identity_service_app');")"
+  [[ "$role_graph" == identity_service_owner:identity_service_migrator:t:t:t ]]
+  rm -f -- "$role_temporary/rejected.out"
+  printf 'Accepted immutable application proof was unchanged; fresh exact PostgreSQL role-metadata fixtures passed.\n'
+  exit 0
+fi
+
 published_export="${IDENTITY_PUBLISHED_EXPORT:?immutable Identity export path required}"
 [[ -f "$published_export/Dockerfile" && -f "$published_export/examples/reference_bff/Dockerfile" ]]
 
@@ -412,15 +527,41 @@ stage=postgres_role_attribute_drift
 docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
   --no-psqlrc --set ON_ERROR_STOP=1 --command 'ALTER ROLE identity_service_app INHERIT;' >/dev/null
 run_bootstrap_contract_expect_failure bootstrap
+run_bootstrap_contract_expect_failure audit
 docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
   --no-psqlrc --set ON_ERROR_STOP=1 --command 'ALTER ROLE identity_service_app NOINHERIT;' >/dev/null
 
-stage=postgres_membership_drift
+stage=postgres_owner_inherit_drift
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'ALTER ROLE identity_service_owner INHERIT;' >/dev/null
+run_bootstrap_contract_expect_failure bootstrap
+run_bootstrap_contract_expect_failure audit
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'ALTER ROLE identity_service_owner NOINHERIT;' >/dev/null
+
+stage=postgres_application_membership_drift
 docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
   --no-psqlrc --set ON_ERROR_STOP=1 --command 'CREATE ROLE identity_fixture_extra NOLOGIN; GRANT identity_fixture_extra TO identity_service_app;' >/dev/null
 run_bootstrap_contract_expect_failure bootstrap
+run_bootstrap_contract_expect_failure audit
 docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
   --no-psqlrc --set ON_ERROR_STOP=1 --command 'REVOKE identity_fixture_extra FROM identity_service_app; DROP ROLE identity_fixture_extra;' >/dev/null
+
+stage=postgres_owner_membership_drift
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'CREATE ROLE identity_fixture_extra NOLOGIN; GRANT identity_fixture_extra TO identity_service_owner;' >/dev/null
+run_bootstrap_contract_expect_failure bootstrap
+run_bootstrap_contract_expect_failure audit
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'REVOKE identity_fixture_extra FROM identity_service_owner; DROP ROLE identity_fixture_extra;' >/dev/null
+
+stage=postgres_membership_admin_option_drift
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'GRANT identity_service_owner TO identity_service_migrator WITH ADMIN OPTION;' >/dev/null
+run_bootstrap_contract_expect_failure bootstrap
+run_bootstrap_contract_expect_failure audit
+docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \
+  --no-psqlrc --set ON_ERROR_STOP=1 --command 'GRANT identity_service_owner TO identity_service_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;' >/dev/null
 
 stage=postgres_ownership_drift
 docker exec --env PGPASSWORD="$bootstrap_password" "$postgres" psql --username identity_bootstrap --dbname identity \

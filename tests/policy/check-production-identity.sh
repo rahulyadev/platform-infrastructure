@@ -46,6 +46,7 @@ deploy=deploy/ssm/deploy-identity.sh
 rollback=deploy/ssm/rollback-identity.sh
 backup=deploy/ssm/backup-identity.sh
 restore=deploy/ssm/restore-identity.sh
+release_verifier=deploy/ssm/verify-identity-release.sh
 roles=config/runtime/postgres-roles.sql
 deployment_fixture=tests/deployment/check-identity.sh
 runtime_fixture=tests/runtime/check-identity-fixtures.sh
@@ -54,7 +55,7 @@ for file in "$core_values" "$core_variables" "$core_outputs" "$runtime_values" "
   "$runtime_outputs" "$authentication" "$custody" "$production_module/ecr.tf" \
   "$production_module/github_oidc.tf" "$production_module/iam.tf" \
   "$production_module/documents.tf" "$production_module/monitoring.tf" "$compose" "$images" "$nginx" "$pgbackrest" "$production_document" \
-  "$configure" "$deploy" "$rollback" "$backup" "$restore" "$roles" "$deployment_fixture" "$runtime_fixture"; do
+  "$configure" "$deploy" "$rollback" "$backup" "$restore" "$release_verifier" "$roles" "$deployment_fixture" "$runtime_fixture"; do
   [[ -f "$file" ]] || fail "a required production Identity source file is missing"
 done
 ((failures == 0)) || exit 1
@@ -233,6 +234,24 @@ require_fixed "$configure" 'rejected active host-global drift' \
   "host-global upgrades must fail closed while Identity is active"
 require_fixed "$configure" 'already matches the active generation; no services changed' \
   "identical host configuration must remain a no-op"
+require_fixed "$configure" 'source_metadata="$(stat -c '\''%a:%u:%g'\'' "$source")"' \
+  "host-global no-op proof must compare exact file metadata"
+require_fixed "$configure" 'all_directories_equal' \
+  "host-global no-op proof must compare exact directory metadata"
+require_fixed "$configure" 'rejected parent-directory metadata drift' \
+  "host-global configuration must fail closed on parent-directory drift"
+require_fixed "$release_verifier" '[[ "${#candidate_inventory[@]}" == 2 ]]' \
+  "release verification must require the exact two-member inventory"
+require_fixed "$release_verifier" '[[ "${candidate_inventory[0]}" == compose.yml:f ]]' \
+  "release verification must require the exact Compose member type"
+require_fixed "$release_verifier" '[[ "${candidate_inventory[1]}" == release.env:f ]]' \
+  "release verification must require the exact environment member type"
+require_fixed "$release_verifier" '"755:$expected_uid:$expected_gid"' \
+  "release verification must require exact parent and root metadata"
+require_fixed "$release_verifier" '"600:$expected_file_uid:$expected_file_gid"' \
+  "release verification must require exact private environment metadata"
+require_fixed "$release_verifier" '"644:$expected_file_uid:$expected_file_gid"' \
+  "release verification must require exact Compose metadata"
 require_fixed "$deploy" 'restore_prior_release' \
   "deployment must automatically restore and re-verify prior health"
 require_fixed "$rollback" 'restore_original' \
@@ -245,6 +264,16 @@ require_fixed "$roles" 'LOGIN INHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPL
   "the PostgreSQL migrator role must retain exact attributes"
 require_fixed "$roles" 'LOGIN NOINHERIT NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS' \
   "the PostgreSQL runtime role must retain exact attributes"
+require_fixed "$roles" 'AND (rolcanlogin OR rolinherit OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)' \
+  "the PostgreSQL owner audit must reject INHERIT and every reviewed elevated attribute"
+require_fixed "$roles" 'NOT membership.admin_option' \
+  "the sole PostgreSQL membership must reject admin delegation"
+require_fixed "$roles" 'membership.inherit_option' \
+  "the sole PostgreSQL membership must retain inheritance"
+require_fixed "$roles" 'membership.set_option' \
+  "the sole PostgreSQL membership must retain SET authorization"
+require_fixed "$roles" 'WITH ADMIN FALSE, INHERIT TRUE, SET TRUE' \
+  "the PostgreSQL role grant must state every exact membership option"
 require_fixed "$roles" 'IDENTITY_POST_MIGRATION_AUDIT' \
   "deployment must retain the exact current-head privilege audit"
 require_fixed "$backup" 'platform_recovery.markers' \
@@ -259,6 +288,26 @@ require_fixed "$runtime_fixture" 'docker exec --interactive --env PGPASSWORD="$b
   "the packed fixture must actually execute its stdin-fed recovery SQL"
 require_fixed "$deployment_fixture" 'previous_promotion' \
   "executable lifecycle proof must include the post-health promotion boundary"
+require_fixed "$deployment_fixture" 'config-file-mode-drift' \
+  "executable configuration proof must inject active-file metadata drift"
+require_fixed "$deployment_fixture" 'config-directory-mode-drift' \
+  "executable configuration proof must inject parent-directory metadata drift"
+require_fixed "$deployment_fixture" 'release-extra-member' \
+  "executable release proof must inject an extra retained member"
+require_fixed "$deployment_fixture" 'release-file-group-drift' \
+  "executable release proof must inject wrong file ownership metadata"
+require_fixed "$runtime_fixture" 'postgres_owner_inherit_drift' \
+  "the packed PostgreSQL fixture must inject owner inheritance drift"
+require_fixed "$runtime_fixture" 'postgres_owner_membership_drift' \
+  "the packed PostgreSQL fixture must inject an extra role granted to owner"
+require_fixed "$runtime_fixture" 'postgres_membership_admin_option_drift' \
+  "the packed PostgreSQL fixture must inject admin-option drift"
+require_fixed "$runtime_fixture" 'b7bfb6e29824326a9a354bf3c7d0fe6988d0117a' \
+  "reused packed-application proof must bind the accepted immutable object"
+require_fixed "$runtime_fixture" 'git diff --quiet c9e25c0e028f35f7d27297e1e0bdd90f77c2c107' \
+  "reused packed-application proof must fail closed if an application input changed"
+require_fixed "$runtime_fixture" 'identity_service_owner:identity_service_migrator:t:t:t' \
+  "fresh PostgreSQL proof must end at the sole exact membership row and options"
 require_fixed deploy/ssm/enable-identity-tls.sh 'identity.rahuly.in' \
   "the fixed Identity TLS operation must target only the exact API hostname"
 require_fixed "$production_module/documents.tf" 'schedule_expression         = "rate(30 minutes)"' \

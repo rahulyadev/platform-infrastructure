@@ -123,7 +123,8 @@ default-false production Identity scaffold defines Cognito federation/domain,
 confidential-client custody, immutable ECR/OIDC delivery, same-host
 Docker/PostgreSQL/Redis, Nginx, monitoring, WAL/PITR, restore, and rollback
 source. Host configuration and release activation share a failure-atomic lifecycle lock, restore
-prior health automatically, audit exact PostgreSQL role/privilege state, and bind recovery proof to
+prior health automatically, enforce exact root-owned host/release metadata and a closed-world
+PostgreSQL role-membership graph, audit exact privileges, and bind recovery proof to
 a pre-backup marker. None of those new gates is enabled or provisioned. See
 [the Identity source contract](docs/production-identity.md) and
 [activation/recovery runbook](runbooks/identity-production.md).

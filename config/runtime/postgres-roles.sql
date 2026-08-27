@@ -14,7 +14,7 @@ BEGIN
   IF EXISTS (
     SELECT 1 FROM pg_roles
     WHERE rolname = 'identity_service_owner'
-      AND (rolcanlogin OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
+      AND (rolcanlogin OR rolinherit OR rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication OR rolbypassrls)
   ) OR EXISTS (
     SELECT 1 FROM pg_roles
     WHERE rolname = 'identity_service_migrator'
@@ -30,21 +30,21 @@ BEGIN
   IF (SELECT count(*) FROM pg_auth_members membership
       JOIN pg_roles granted ON granted.oid = membership.roleid
       JOIN pg_roles member ON member.oid = membership.member
-      WHERE granted.rolname = 'identity_service_owner'
-        AND member.rolname = 'identity_service_migrator'
-        AND membership.inherit_option) <> 1
+      WHERE granted.rolname IN ('identity_service_owner', 'identity_service_migrator', 'identity_service_app')
+         OR member.rolname IN ('identity_service_owner', 'identity_service_migrator', 'identity_service_app')) <> 1
     OR EXISTS (
       SELECT 1 FROM pg_auth_members membership
       JOIN pg_roles granted ON granted.oid = membership.roleid
       JOIN pg_roles member ON member.oid = membership.member
-      WHERE member.rolname IN ('identity_service_migrator', 'identity_service_app')
-        AND NOT (member.rolname = 'identity_service_migrator' AND granted.rolname = 'identity_service_owner' AND membership.inherit_option)
-    ) OR EXISTS (
-      SELECT 1 FROM pg_auth_members membership
-      JOIN pg_roles granted ON granted.oid = membership.roleid
-      JOIN pg_roles member ON member.oid = membership.member
-      WHERE granted.rolname = 'identity_service_owner'
-        AND member.rolname <> 'identity_service_migrator'
+      WHERE (granted.rolname IN ('identity_service_owner', 'identity_service_migrator', 'identity_service_app')
+          OR member.rolname IN ('identity_service_owner', 'identity_service_migrator', 'identity_service_app'))
+        AND NOT (
+          granted.rolname = 'identity_service_owner'
+          AND member.rolname = 'identity_service_migrator'
+          AND NOT membership.admin_option
+          AND membership.inherit_option
+          AND membership.set_option
+        )
     ) THEN
     RAISE EXCEPTION 'identity role membership contract mismatch';
   END IF;
@@ -141,13 +141,15 @@ BEGIN
     SELECT 1 FROM pg_auth_members membership
     JOIN pg_roles granted ON granted.oid = membership.roleid
     JOIN pg_roles member ON member.oid = membership.member
-    WHERE member.rolname IN ('identity_service_migrator', 'identity_service_app')
-      AND NOT (member.rolname = 'identity_service_migrator' AND granted.rolname = 'identity_service_owner' AND membership.inherit_option)
-  ) OR EXISTS (
-    SELECT 1 FROM pg_auth_members membership
-    JOIN pg_roles granted ON granted.oid = membership.roleid
-    JOIN pg_roles member ON member.oid = membership.member
-    WHERE granted.rolname = 'identity_service_owner' AND member.rolname <> 'identity_service_migrator'
+    WHERE (granted.rolname IN ('identity_service_owner', 'identity_service_migrator', 'identity_service_app')
+        OR member.rolname IN ('identity_service_owner', 'identity_service_migrator', 'identity_service_app'))
+      AND NOT (
+        granted.rolname = 'identity_service_owner'
+        AND member.rolname = 'identity_service_migrator'
+        AND NOT membership.admin_option
+        AND membership.inherit_option
+        AND membership.set_option
+      )
   ) THEN
     RAISE EXCEPTION 'identity role membership drift';
   END IF;
@@ -161,7 +163,7 @@ CREATE TEMP TABLE identity_service_app_password(value text);
 SELECT format('ALTER ROLE identity_service_migrator PASSWORD %L', value) FROM identity_service_migrator_password \gexec
 SELECT format('ALTER ROLE identity_service_app PASSWORD %L', value) FROM identity_service_app_password \gexec
 
-GRANT identity_service_owner TO identity_service_migrator WITH INHERIT TRUE, SET TRUE;
+GRANT identity_service_owner TO identity_service_migrator WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;
 REVOKE ALL ON DATABASE identity FROM PUBLIC;
 GRANT CONNECT ON DATABASE identity TO identity_service_migrator, identity_service_app;
 REVOKE ALL ON SCHEMA public FROM PUBLIC;

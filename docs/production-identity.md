@@ -55,7 +55,10 @@ download, executable, unit, helper, generated file, secret, TLS identity, owner,
 validates the complete candidate before an adjacent atomic rename can affect an active path. It
 retains the prior generation and exact global objects until success, restores all of them on any
 failure, and removes raw staging material. An identical rerun is a no-op without a service stop or
-restart; a host-global binary or unit upgrade while Identity is active fails before any active
+restart only when every managed parent is a real root-owned/root-group directory at its reviewed
+mode and every active binary, helper, unit, and enablement link or file has its exact type,
+root ownership, mode, and content; metadata drift is not silently repaired while the workload is
+active. A host-global binary or unit upgrade while Identity is active fails before any active
 write. Secret files are root-owned, single-service-group-readable files selected by one atomic
 generation symlink. PostgreSQL clients require TCP with
 `sslmode=verify-full`. The BFF constructs a process-local public/private CA bundle in tmpfs and
@@ -64,10 +67,12 @@ and exact key namespace `reference-bff:production:portfolio:identity`.
 
 PostgreSQL has a `NOLOGIN NOINHERIT` owner, a `LOGIN INHERIT` migrator, and a `LOGIN NOINHERIT`
 runtime role; all three are non-superuser, non-createdb, non-createrole, non-replication, and
-non-bypass-RLS. Bootstrap repairs role, membership, schema-ownership, and grant drift, removes
-PUBLIC database/schema privileges, and then audits the exact current-head table, sequence, and
-column privilege inventory after the published migration. The runtime role owns nothing, belongs
-to no role, and receives no destructive, DDL, ownership, or role-escalation permission. Migrations
+non-bypass-RLS. The sole reviewed membership is owner granted to migrator with admin false,
+inherit true, and set true. Bootstrap creates missing reviewed state but fails closed on pre-existing
+role, membership-option, third-party-edge, ownership, or grant drift; it removes PUBLIC
+database/schema privileges and then audits the exact current-head table, sequence, and column
+privilege inventory after the published migration. The runtime role owns nothing, belongs to no
+role, and receives no destructive, DDL, ownership, or role-escalation permission. Migrations
 must reach exact head `0001_initial_identity_schema` before activation. Redis is BFF-only session and
 OAuth-transaction state, uses TTL-compatible eviction, and has persistence disabled. Redis loss
 invalidates sessions and requires reauthentication; no recovery claim is made. Recovery design is
@@ -88,7 +93,9 @@ its container and private directory.
 EBS/DLM remains crash-consistent host recovery only.
 
 Deploy and rollback validate their target release before switching and constrain the release
-verifier to the release root and exact metadata contract. Once activation begins, any Nginx,
+verifier to a real root-owned, root-group release parent and release root at mode 0755. A retained
+release contains exactly regular `compose.yml` (mode 0644) and `release.env` (mode 0600), both
+root-owned/root-group, with no additional member. Once activation begins, any Nginx,
 systemd, verifier, or health failure restores the exact prior links, environment, Nginx
 configuration, and service state, restarts the prior release, and proves it healthy. The previous
 link is promoted only after the candidate is healthy.

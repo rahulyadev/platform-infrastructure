@@ -16,8 +16,9 @@ if [[ "$*" == --transaction-fixture ]]; then
   fixture_active="$fixture_root/active"
   fixture_rollback="$fixture_root/rollback"
   fixture_fail_at="$PLATFORM_IDENTITY_FAIL_AT"
+  fixture_uid="$(id -u)"
+  fixture_gid="$(id -g)"
   [[ -f "$fixture_stage/global-binary" && -f "$fixture_stage/global-unit" && -f "$fixture_stage/generation" ]]
-  install -d -m 0700 "$fixture_rollback"
   fixture_restore() {
     trap - ERR
     for name in global-binary global-unit enablement; do
@@ -39,14 +40,26 @@ if [[ "$*" == --transaction-fixture ]]; then
     printf 'Identity configuration transaction fixture failed safely.\n' >&2
     exit 1
   }
-  trap fixture_restore ERR
-  install -d -m 0755 "$fixture_active"
   fixture_changed=false
+  fixture_directory_drift=false
+  if [[ -e "$fixture_active" || -L "$fixture_active" ]]; then
+    if [[ ! -d "$fixture_active" || -L "$fixture_active" || "$(stat -c '%a:%u:%g' "$fixture_active")" != "755:$fixture_uid:$fixture_gid" ]]; then
+      fixture_changed=true
+      fixture_directory_drift=true
+    fi
+  else
+    fixture_changed=true
+  fi
   for name in global-binary global-unit; do
-    if [[ ! -f "$fixture_active/$name" ]] || ! cmp -s "$fixture_stage/$name" "$fixture_active/$name"; then fixture_changed=true; fi
+    if [[ ! -f "$fixture_active/$name" || -L "$fixture_active/$name" ]] \
+      || [[ "$(stat -c '%a:%u:%g' "$fixture_active/$name" 2>/dev/null || true)" != "644:$fixture_uid:$fixture_gid" ]] \
+      || ! cmp -s "$fixture_stage/$name" "$fixture_active/$name"; then fixture_changed=true; fi
   done
   if [[ ! -L "$fixture_active/generation-link" || "$(readlink -- "$fixture_active/generation-link" 2>/dev/null || true)" != generations/new ]]; then fixture_changed=true; fi
-  if [[ "$fixture_changed" == false && -f "$fixture_active/enablement" ]] && grep -Fxq enabled "$fixture_active/enablement"; then
+  if [[ ! -f "$fixture_active/enablement" || -L "$fixture_active/enablement" ]] \
+    || [[ "$(stat -c '%a:%u:%g' "$fixture_active/enablement" 2>/dev/null || true)" != "600:$fixture_uid:$fixture_gid" ]] \
+    || ! grep -Fxq enabled "$fixture_active/enablement"; then fixture_changed=true; fi
+  if [[ "$fixture_changed" == false ]]; then
     rm -rf -- "$fixture_rollback"
     trap - ERR
     printf 'Identity configuration transaction fixture was an exact no-op.\n'
@@ -56,6 +69,13 @@ if [[ "$*" == --transaction-fixture ]]; then
     printf 'Identity configuration transaction fixture rejected active host-global drift.\n' >&2
     exit 1
   fi
+  if [[ "$fixture_directory_drift" == true ]]; then
+    printf 'Identity configuration transaction fixture rejected parent-directory metadata drift.\n' >&2
+    exit 1
+  fi
+  install -d -m 0755 "$fixture_active"
+  install -d -m 0700 "$fixture_rollback"
+  trap fixture_restore ERR
   for name in global-binary global-unit enablement; do
     [[ ! -f "$fixture_active/$name" ]] || cp --archive -- "$fixture_active/$name" "$fixture_rollback/$name"
   done
@@ -103,17 +123,45 @@ docker_was_active=false
 stack_was_active=false
 declare -a active_targets=()
 declare -a created_directories=()
+readonly -a managed_directory_specs=(
+  "/opt:0755"
+  "/opt/platform:0755"
+  "/opt/platform/identity:0755"
+  "/opt/platform/identity/releases:0755"
+  "/usr/local:0755"
+  "/usr/local/bin:0755"
+  "/usr/local/lib:0755"
+  "/usr/local/lib/docker:0755"
+  "/usr/local/lib/docker/cli-plugins:0755"
+  "/usr/local/libexec:0755"
+  "/usr/local/libexec/platform:0755"
+  "/etc:0755"
+  "/etc/platform:0755"
+  "/etc/systemd:0755"
+  "/etc/systemd/system:0755"
+  "$generation_root:0700"
+)
 
-install -d -m 0755 /run/lock
+[[ -d /run && ! -L /run && "$(stat -c '%a:%u:%g' /run)" == 755:0:0 ]]
+if [[ -e /run/lock || -L /run/lock ]]; then
+  [[ -d /run/lock && ! -L /run/lock && "$(stat -c '%a:%u:%g' /run/lock)" == 755:0:0 ]]
+else
+  install -d -o root -g root -m 0755 /run/lock
+fi
 exec 9>"$lifecycle_lock"
 flock -w 30 9
+
+directory_exact() {
+  local directory="$1" mode="$2"
+  [[ -d "$directory" && ! -L "$directory" && "$(stat -c '%a:%u:%g' "$directory")" == "$mode:0:0" ]]
+}
 
 register_directory() {
   local directory="$1" mode="$2"
   if [[ -e "$directory" || -L "$directory" ]]; then
-    [[ -d "$directory" && ! -L "$directory" ]]
+    directory_exact "$directory" "$mode"
   else
-    install -d -m "$mode" "$directory"
+    install -d -o root -g root -m "$mode" "$directory"
     created_directories+=("$directory")
   fi
 }
@@ -388,15 +436,26 @@ mapfile -t staged_files < <(find "$work_root/active" -type f -print | LC_ALL=C s
 all_active_equal=true
 for source in "$${staged_files[@]}"; do
   target="/$${source#"$work_root/active/"}"
-  if [[ ! -f "$target" || -L "$target" ]] || ! cmp -s "$source" "$target"; then
+  source_metadata="$(stat -c '%a:%u:%g' "$source")"
+  if [[ ! -f "$target" || -L "$target" ]] \
+    || [[ "$(stat -c '%a:%u:%g' "$target" 2>/dev/null || true)" != "$source_metadata" ]] \
+    || ! cmp -s "$source" "$target"; then
     all_active_equal=false
   fi
+done
+
+all_directories_equal=true
+for specification in "$${managed_directory_specs[@]}"; do
+  directory="$${specification%:*}"
+  mode="$${specification##*:}"
+  if ! directory_exact "$directory" "$mode"; then all_directories_equal=false; fi
 done
 
 current_generation=""
 if [[ -L "$active_generation" ]]; then
   current_generation="$(readlink -f -- "$active_generation")"
   [[ "$current_generation" == "$generation_root"/* && -d "$current_generation" && ! -L "$current_generation" ]]
+  [[ "$(stat -c '%a:%u:%g' "$current_generation")" == 700:0:0 ]]
 fi
 generation_equal=false
 if [[ -n "$current_generation" ]]; then
@@ -428,7 +487,7 @@ fi
 docker_enabled=false; stack_enabled=false
 [[ "$(systemctl is-enabled docker.service 2>/dev/null || true)" == enabled ]] && docker_enabled=true
 [[ "$(systemctl is-enabled identity-stack.service 2>/dev/null || true)" == enabled ]] && stack_enabled=true
-if [[ "$all_active_equal" == true && "$generation_equal" == true && "$docker_enabled" == true && "$stack_enabled" == true ]]; then
+if [[ "$all_active_equal" == true && "$all_directories_equal" == true && "$generation_equal" == true && "$docker_enabled" == true && "$stack_enabled" == true ]]; then
   rm -rf -- "$work_root"/*
   trap - ERR
   printf 'Identity runtime configuration already matches the active generation; no services changed.\n'
@@ -440,15 +499,11 @@ if systemctl is-active --quiet identity-stack.service; then
   exit 1
 fi
 
-register_directory /opt/platform 0755
-register_directory /opt/platform/identity 0755
-register_directory /opt/platform/identity/releases 0755
-register_directory /usr/local/lib/docker 0755
-register_directory /usr/local/lib/docker/cli-plugins 0755
-register_directory /usr/local/libexec 0755
-register_directory /usr/local/libexec/platform 0755
-register_directory /etc/systemd/system 0755
-register_directory "$generation_root" 0700
+for specification in "$${managed_directory_specs[@]}"; do
+  directory="$${specification%:*}"
+  mode="$${specification##*:}"
+  register_directory "$directory" "$mode"
+done
 
 if [[ -L "$active_generation" ]]; then previous_generation="$(readlink -- "$active_generation")"; elif [[ -e "$active_generation" ]]; then exit 1; fi
 systemctl is-enabled --quiet docker.service 2>/dev/null && docker_was_enabled=true || true
