@@ -31,7 +31,7 @@ The production foundation uses:
 - OpenTofu with state stored in a private, encrypted, versioned S3 bucket and
   native S3 lock files after bootstrap.
 - One custom VPC and one public subnet in the application region.
-- One ARM64 Amazon Linux 2023 `t4g.small` instance with an Elastic IP.
+- One ARM64 Amazon Linux 2023 `t4g.medium` instance direction with an Elastic IP.
 - Systems Manager for administration, with no EC2 key pair or public SSH.
 - Host Nginx at the edge, configured through fixed Systems Manager documents.
 - Private versioned S3 buckets for immutable portfolio artifacts and backups.
@@ -59,7 +59,8 @@ resource names do not embed an environment's domain.
 - `infra/live/production/runtime`: isolated runtime, monitoring, snapshot, and
   deployment-control root that reads the core remote state.
 - `infra/modules`: reusable bucket, budget, network, host, runtime monitoring,
-  deployment, snapshot, and disabled Identity Cognito core modules.
+  deployment, snapshot, and default-disabled Identity authentication, delivery,
+  runtime, recovery, and Cognito modules.
 - `config`: reviewed Nginx and CloudWatch Agent configuration.
 - `deploy`: immutable release identity, deterministic artifact tooling, fixed
   Systems Manager scripts, and smoke tests.
@@ -118,8 +119,12 @@ See the [state bootstrap](runbooks/state-bootstrap.md),
 This foundation supports one live static portfolio host, foundational
 networking, private storage, Systems Manager access, cost controls, monitoring,
 immutable deployment, rollback, TLS, and tested snapshot restoration. A
-default-false source scaffold defines only the future Cognito User Pool and
-Identity API resource server; it is not provisioned. Google OAuth, app clients,
-Cognito domain/certificate wiring, identity routing, databases, Redis,
-RabbitMQ, multi-AZ designs, load balancers, and container orchestration are not
-provisioned.
+default-false production Identity scaffold defines Cognito federation/domain,
+confidential-client custody, immutable ECR/OIDC delivery, same-host
+Docker/PostgreSQL/Redis, Nginx, monitoring, WAL/PITR, restore, and rollback
+source. Host configuration and release activation share a failure-atomic lifecycle lock, restore
+prior health automatically, enforce exact root-owned host/release metadata and a closed-world
+PostgreSQL role-membership graph, audit exact privileges, and bind recovery proof to
+a pre-backup marker. None of those new gates is enabled or provisioned. See
+[the Identity source contract](docs/production-identity.md) and
+[activation/recovery runbook](runbooks/identity-production.md).

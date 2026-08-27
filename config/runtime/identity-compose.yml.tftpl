@@ -1,0 +1,269 @@
+name: identity-production
+
+x-hardened: &hardened
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 256
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=64m
+
+services:
+  postgres:
+    image: ${postgres_image}
+    platform: linux/arm64/v8
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    shm_size: 256m
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    volumes:
+      - identity_postgres:/var/lib/postgresql
+      - identity_postgres_run:/run/postgresql
+      - identity_wal_spool:/var/spool/pgbackrest
+      - /etc/platform/identity/secrets/database:/run/secrets/database:ro
+      - /etc/platform/identity/tls/postgres-server:/run/tls/postgres:ro
+      - /etc/platform/identity/tls/postgres-client/ca.crt:/run/tls/client/ca.crt:ro
+      - /etc/platform/identity/postgres-hba.conf:/run/config/postgres-hba.conf:ro
+    environment:
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256 --auth-local=reject
+      POSTGRES_DB: identity
+      POSTGRES_PASSWORD_FILE: /run/secrets/database/bootstrap_password
+      POSTGRES_USER: identity_bootstrap
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/run/tls/postgres/server.crt
+      - -c
+      - ssl_key_file=/run/tls/postgres/server.key
+      - -c
+      - ssl_ca_file=/run/tls/postgres/ca.crt
+      - -c
+      - password_encryption=scram-sha-256
+      - -c
+      - hba_file=/run/config/postgres-hba.conf
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_command=test ! -f /var/spool/pgbackrest/%f && cp %p /var/spool/pgbackrest/%f.part && mv /var/spool/pgbackrest/%f.part /var/spool/pgbackrest/%f
+    networks: [state]
+    healthcheck:
+      test: [CMD, pg_isready, --dbname, host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    stop_grace_period: 60s
+    mem_limit: 1g
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${aws_region}
+        awslogs-group: /${name_prefix}/identity/database
+        awslogs-stream: postgres
+
+  pgbackrest:
+    image: ${pgbackrest_image}
+    platform: linux/arm64
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    user: "999:65532"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    volumes:
+      - identity_postgres:/var/lib/postgresql:ro
+      - identity_postgres_run:/run/postgresql
+      - identity_wal_spool:/var/spool/pgbackrest
+      - /etc/platform/identity/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+      - /etc/platform/identity/secrets/backup:/run/secrets/backup:ro
+      - /usr/local/libexec/platform/pgbackrest-sidecar:/opt/platform/pgbackrest-sidecar:ro
+      - /etc/platform/identity/pgbackrest-passwd:/etc/passwd:ro
+    entrypoint: [/bin/sh]
+    command: [/opt/platform/pgbackrest-sidecar]
+    depends_on:
+      postgres: {condition: service_healthy}
+    # Host networking is restricted to this listener-free backup sidecar so
+    # IMDSv2 hop-limit 1 remains intact while the AWS SDK obtains the host role.
+    network_mode: host
+    healthcheck:
+      test: [CMD, pgbackrest, --stanza=identity, check]
+      interval: 60s
+      timeout: 20s
+      retries: 5
+    stop_grace_period: 60s
+    mem_limit: 256m
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${aws_region}
+        awslogs-group: /${name_prefix}/identity/backup
+        awslogs-stream: pgbackrest
+
+  redis:
+    image: ${redis_image}
+    platform: linux/arm64/v8
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /data:rw,noexec,nosuid,nodev,size=256m
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    volumes:
+      - /etc/platform/identity/secrets/redis-server:/run/secrets/redis:ro
+      - /etc/platform/identity/tls/redis-server:/run/tls/redis:ro
+    command:
+      - redis-server
+      - --port
+      - "0"
+      - --tls-port
+      - "6379"
+      - --tls-cert-file
+      - /run/tls/redis/server.crt
+      - --tls-key-file
+      - /run/tls/redis/server.key
+      - --tls-ca-cert-file
+      - /run/tls/redis/ca.crt
+      - --tls-auth-clients
+      - "no"
+      - --aclfile
+      - /run/secrets/redis/users.acl
+      - --maxmemory
+      - 192mb
+      - --maxmemory-policy
+      - volatile-ttl
+      - --appendonly
+      - "no"
+      - --save
+      - ""
+    networks: [state]
+    healthcheck:
+      test: [CMD-SHELL, REDISCLI_AUTH="$$(cat /run/secrets/redis/bff_password)" exec redis-cli --tls --sni redis --user portfolio_bff --cacert /run/tls/redis/ca.crt ping]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    stop_grace_period: 30s
+    mem_limit: 256m
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${aws_region}
+        awslogs-group: /${name_prefix}/identity/database
+        awslogs-stream: redis
+
+  migrator:
+    image: $${IDENTITY_API_IMAGE:?immutable Identity API image required}
+    platform: linux/arm64
+    restart: "no"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    user: "10001:10001"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    volumes:
+      - /etc/platform/identity/secrets/database/migrator_password:/run/secrets/database/migrator_password:ro
+      - /etc/platform/identity/tls/postgres-client/ca.crt:/run/tls/postgres/ca.crt:ro
+      - /etc/platform/identity/identity-launcher.py:/opt/platform/identity-launcher.py:ro
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+    entrypoint: [python, /opt/platform/identity-launcher.py]
+    command: [migrator]
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [state]
+    mem_limit: 256m
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${aws_region}
+        awslogs-group: /${name_prefix}/identity/deployment
+        awslogs-stream: migrator
+
+  api:
+    <<: *hardened
+    image: $${IDENTITY_API_IMAGE:?immutable Identity API image required}
+    platform: linux/arm64
+    user: "10001:10001"
+    ports: [127.0.0.1:8081:8080]
+    volumes:
+      - /etc/platform/identity/secrets/database/runtime_password:/run/secrets/database/runtime_password:ro
+      - /etc/platform/identity/tls/postgres-client/ca.crt:/run/tls/postgres/ca.crt:ro
+      - /etc/platform/identity/identity-launcher.py:/opt/platform/identity-launcher.py:ro
+    environment:
+      PLATFORM_COGNITO_ISSUER: $${COGNITO_ISSUER:?Cognito issuer required}
+      PLATFORM_COGNITO_JWKS_URL: $${COGNITO_JWKS_URL:?Cognito JWKS URL required}
+      PLATFORM_COGNITO_CLIENT_ID: $${COGNITO_CLIENT_ID:?Cognito client ID required}
+      IDENTITY_ORIGIN: https://identity.rahuly.in
+      PORT: "8080"
+    entrypoint: [python, /opt/platform/identity-launcher.py]
+    command: [api]
+    depends_on:
+      postgres: {condition: service_healthy}
+    networks: [edge, state]
+    healthcheck:
+      test: [CMD, python, scripts/healthcheck.py]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+    stop_grace_period: 30s
+    mem_limit: 512m
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${aws_region}
+        awslogs-group: /${name_prefix}/identity/api
+        awslogs-stream: api
+
+  bff:
+    <<: *hardened
+    image: $${IDENTITY_BFF_IMAGE:?immutable reference-BFF image required}
+    platform: linux/arm64
+    user: "10002:10002"
+    ports: [127.0.0.1:8082:8081]
+    volumes:
+      - /etc/platform/identity/secrets/client/client_secret:/run/secrets/client/client_secret:ro
+      - /etc/platform/identity/secrets/redis-client/bff_password:/run/secrets/redis/bff_password:ro
+      - /etc/platform/identity/tls/redis-client/ca.crt:/run/tls/redis/ca.crt:ro
+      - /etc/platform/identity/identity-launcher.py:/opt/platform/identity-launcher.py:ro
+    environment:
+      PLATFORM_COGNITO_ISSUER: $${COGNITO_ISSUER:?Cognito issuer required}
+      PLATFORM_COGNITO_JWKS_URL: $${COGNITO_JWKS_URL:?Cognito JWKS URL required}
+      PLATFORM_COGNITO_CLIENT_ID: $${COGNITO_CLIENT_ID:?Cognito client ID required}
+      BFF_ORIGIN: https://rahuly.in
+      PORT: "8081"
+    entrypoint: [python, /opt/platform/identity-launcher.py]
+    command: [bff]
+    depends_on:
+      redis: {condition: service_healthy}
+      api: {condition: service_healthy}
+    networks: [edge, state]
+    healthcheck:
+      test: [CMD, python, scripts/healthcheck.py]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+    stop_grace_period: 30s
+    mem_limit: 384m
+    logging:
+      driver: awslogs
+      options:
+        awslogs-region: ${aws_region}
+        awslogs-group: /${name_prefix}/identity/bff
+        awslogs-stream: bff
+
+networks:
+  edge: {}
+  state:
+    internal: true
+
+volumes:
+  identity_postgres: {}
+  identity_postgres_run: {}
+  identity_wal_spool: {}

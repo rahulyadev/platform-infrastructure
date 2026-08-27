@@ -37,3 +37,18 @@ output "snapshot_policy_id" {
   description = "DLM lifecycle policy identifier."
   value       = module.snapshot_policy.policy_id
 }
+
+output "identity_repository_urls" {
+  description = "Non-secret immutable Identity ECR repository URLs when the delivery foundation is enabled."
+  value       = var.enable_identity_delivery_foundation ? module.identity_production[0].repository_urls : null
+}
+
+output "identity_github_deployment_role_arn" {
+  description = "Non-secret Identity service GitHub deployment role ARN when enabled."
+  value       = var.enable_identity_delivery_foundation ? module.identity_production[0].github_deployment_role_arn : null
+}
+
+output "identity_ssm_document_names" {
+  description = "Non-secret fixed Identity operation document names when enabled."
+  value       = var.enable_identity_delivery_foundation ? module.identity_production[0].document_names : null
+}

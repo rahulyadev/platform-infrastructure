@@ -74,4 +74,5 @@ jq -e '
   .packages.certbotRequiresPython == ">=3.10"
 ' config/runtime/packages.json >/dev/null
 
+bash tests/runtime/check-identity.sh
 printf '%s\n' 'runtime contract checks passed'

@@ -33,14 +33,17 @@ Cognito prohibition. Across every Terraform file in
 resource block: `aws_cognito_user_pool_client.reference_bff`. Every other
 resource and every data, child-module, or provider block in either module are
 forbidden; the client module also forbids import, moved, check, and provisioner
-blocks. Across all active repository Terraform files, those three blocks must
-remain the complete Cognito resource inventory, Cognito data blocks are
-forbidden, and Cognito provider references may occur only inside those exact
-module directories.
+blocks. Across all active repository Terraform files, the complete Cognito
+resource inventory is those three blocks plus exactly one
+`aws_cognito_identity_provider.google` and one
+`aws_cognito_user_pool_domain.auth` in the exact authentication module.
+Cognito data blocks remain forbidden. Cognito provider references may occur
+only inside the exact core, client, and authentication module directories.
 
 The repository must contain exactly one normalized local source reference to
-each Cognito module, including equivalent relative path spellings, and both may
-exist only in `infra/live/production/core/main.tf`. The core instantiation must
+each published Cognito core/client module, including equivalent relative path
+spellings, and both may exist only in `infra/live/production/core/main.tf`. The
+core instantiation must
 retain its exact module name, default-false count gate, source, `name_prefix`
 and canonical-tag inputs, conditional outputs, and committed-value non-enable
 check. The core module contract also enforces the Essentials tier,
@@ -52,19 +55,22 @@ The reference-BFF client instantiation must retain its separate default-false
 gate, empty committed origin default, exact source, fail-closed core outputs,
 canonical name prefix, validated origin input, and null-while-disabled
 non-secret root outputs. An explicit root-variable validation enforces that the
-client gate can be enabled only with the Cognito-core gate and a nonempty origin
-collection; the collection's separate exact grammar, cardinality, and uniqueness
-validation must also pass. The child contract requires a generated secret,
+client gate can be enabled only with Cognito core, Google federation, the direct
+custom domain, and the one exact portfolio origin; the collection's separate
+exact grammar, cardinality, and uniqueness validation must also pass. The child
+contract requires a generated secret,
 authorization-code-only OAuth, exact `openid` and Identity scope inputs,
 Google-only provider support, no native/API authentication flow, exact callback
 and signed-out derivation, explicit 15-minute access/ID and 14-day refresh
 validity, enabled ten-second refresh rotation, revocation, user-existence-error
 prevention, three-minute auth sessions, exact email read/write attributes, and
 `prevent_destroy`. Only its child `client_secret` output is sensitive; the root
-must never expose it. No application origin may be committed. Identity
-providers, domains, Identity Pools, certificates, Lambda, users, credentials,
-secret-custody resources, analytics, M2M, and every other deferred Cognito
-resource remain forbidden.
+must never expose it. No application origin may be committed. Additional
+providers/domains, Identity Pools, Lambda, users, credentials, analytics, M2M,
+and every other deferred Cognito resource remain forbidden. The authentication
+module's staged ACM request/validation and Google credential reference, and the
+exact generated-client-secret custody module, are the sole narrow exceptions
+for those non-Cognito resource families.
 
 The production runtime root is subject to the same blocking provider and S3
 backend rules. Its state key must be exactly `production/runtime/tofu.tfstate`,
@@ -113,3 +119,13 @@ The check reports file names rather than matching line content so a detected
 credential-like value is not repeated in output. Policy fixtures can be added
 later only if they cannot trigger production scans or contain secret-like test
 values.
+
+`tests/policy/check-production-identity.sh` is the narrow production Identity
+extension. It allows only the staged Google IdP and direct Cognito custom domain
+in the exact authentication module and keeps the repository-wide Cognito
+inventory at the reviewed five blocks. It also enforces ordered default-false
+gates, ACM/custody placement, two immutable ECR repositories, immutable GitHub
+identity, least IAM and non-Google host secrets, digest-pinned ARM64 support
+images, private hardened state services, exact same-origin Nginx routes, fixed
+SSM/migration/backup/restore operations, and preservation of the existing eight
+alarms. Failures are contract-oriented and never reproduce matching values.

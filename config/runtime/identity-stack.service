@@ -1,0 +1,24 @@
+[Unit]
+Description=Production Identity Compose stack
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/platform/identity/current
+EnvironmentFile=/etc/platform/identity/release.env
+ExecStartPre=/usr/local/libexec/platform/identity-verify-release
+ExecStart=/usr/local/lib/docker/cli-plugins/docker-compose --project-name identity-production up --detach --wait --remove-orphans
+ExecStop=/usr/local/lib/docker/cli-plugins/docker-compose --project-name identity-production down --timeout 30
+TimeoutStartSec=600
+TimeoutStopSec=120
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/docker /run/docker.sock /opt/platform/identity /etc/platform/identity
+
+[Install]
+WantedBy=multi-user.target

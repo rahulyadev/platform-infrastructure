@@ -21,6 +21,13 @@ locals {
     auth      = "auth.${var.base_domain}"
     identity  = "identity.${var.base_domain}"
   }
+
+  enable_identity_authentication_module = anytrue([
+    var.enable_identity_auth_certificate,
+    var.enable_identity_auth_certificate_validation,
+    var.enable_identity_google_federation,
+    var.enable_identity_auth_domain,
+  ])
 }
 
 module "artifact_bucket" {
@@ -80,4 +87,36 @@ module "identity_cognito_reference_bff_client" {
   profile_write_scope_identifier = one(module.identity_cognito_core[*].profile_write_scope_identifier)
   name_prefix                    = local.name_prefix
   application_origins            = var.identity_reference_bff_application_origins
+
+  depends_on = [module.identity_authentication]
+}
+
+module "identity_authentication" {
+  count  = local.enable_identity_authentication_module ? 1 : 0
+  source = "../../../modules/identity_authentication"
+
+  providers = {
+    aws           = aws
+    aws.us_east_1 = aws.us_east_1
+  }
+
+  name_prefix                         = local.name_prefix
+  auth_domain                         = local.domains.auth
+  user_pool_id                        = var.enable_identity_cognito_core ? module.identity_cognito_core[0].user_pool_id : null
+  enable_certificate_request          = var.enable_identity_auth_certificate
+  enable_certificate_validation       = var.enable_identity_auth_certificate_validation
+  certificate_validation_record_fqdns = var.identity_auth_certificate_validation_record_fqdns
+  enable_google_federation            = var.enable_identity_google_federation
+  google_credentials_secret_arn       = var.identity_google_credentials_secret_arn
+  enable_user_pool_domain             = var.enable_identity_auth_domain
+  tags                                = local.default_tags
+}
+
+module "identity_client_secret_custody" {
+  count  = var.enable_identity_client_secret_custody ? 1 : 0
+  source = "../../../modules/identity_secret_custody"
+
+  name_prefix   = local.name_prefix
+  client_secret = module.identity_cognito_reference_bff_client[0].client_secret
+  tags          = local.default_tags
 }
