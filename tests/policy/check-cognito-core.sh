@@ -582,8 +582,10 @@ require_text_count 1 '^[[:space:]]*var[.]enable_identity_google_federation[[:spa
   "$identity_reference_bff_client_gate_block" "production reference BFF client gate must require Google federation"
 require_text_count 1 '^[[:space:]]*var[.]enable_identity_auth_domain[[:space:]]*&&[[:space:]]*$' \
   "$identity_reference_bff_client_gate_block" "production reference BFF client gate must require the custom domain"
-require_fixed_count 1 'var.identity_reference_bff_application_origins == [format("https://%s", var.base_domain)]' \
-  "$core_variables" "production reference BFF client gate must require the exact portfolio origin"
+require_fixed_count 1 'var.identity_reference_bff_application_origins == tolist([format("https://%s", var.base_domain)])' \
+  "$core_variables" "production reference BFF client gate must require the type-stable exact portfolio origin"
+reject_pattern '^[[:space:]]*var[.]identity_reference_bff_application_origins[[:space:]]*==[[:space:]]*\[format[(]"https://%s",[[:space:]]*var[.]base_domain[)]\][[:space:]]*$' \
+  "$core_variables" "production reference BFF client gate must reject the type-unstable tuple comparison"
 require_count 1 '^[[:space:]]*variable[[:space:]]+"identity_reference_bff_application_origins"[[:space:]]*\{' \
   "$core_variables" "production core must declare one reference BFF application-origin input"
 identity_reference_bff_origins_block="$(

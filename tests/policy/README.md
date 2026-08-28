@@ -57,7 +57,11 @@ canonical name prefix, validated origin input, and null-while-disabled
 non-secret root outputs. An explicit root-variable validation enforces that the
 client gate can be enabled only with Cognito core, Google federation, the direct
 custom domain, and the one exact portfolio origin; the collection's separate
-exact grammar, cardinality, and uniqueness validation must also pass. The child
+exact grammar, cardinality, and uniqueness validation must also pass. The exact
+singleton comparison is deliberately type-stable: the typed `list(string)`
+input must equal `tolist([format("https://%s", var.base_domain)])`; restoring a
+tuple-literal comparison, removing the prerequisite, or weakening it is
+forbidden. The child
 contract requires a generated secret,
 authorization-code-only OAuth, exact `openid` and Identity scope inputs,
 Google-only provider support, no native/API authentication flow, exact callback

@@ -137,7 +137,7 @@ variable "enable_identity_reference_bff_client" {
       var.enable_identity_cognito_core &&
       var.enable_identity_google_federation &&
       var.enable_identity_auth_domain &&
-      var.identity_reference_bff_application_origins == [format("https://%s", var.base_domain)]
+      var.identity_reference_bff_application_origins == tolist([format("https://%s", var.base_domain)])
     )
     error_message = "enable_identity_reference_bff_client requires the Cognito core, Google federation, and user-pool domain gates plus the exact portfolio origin."
   }
