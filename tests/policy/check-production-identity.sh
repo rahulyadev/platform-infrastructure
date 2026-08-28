@@ -91,8 +91,10 @@ require_count 1 '^[[:space:]]*identity_reference_bff_application_origins[[:space
 
 require_fixed "$core_variables" 'var.enable_identity_auth_certificate_validation &&' \
   "the custom domain must require validated ACM DNS"
-require_fixed "$core_variables" 'var.identity_reference_bff_application_origins == [format("https://%s", var.base_domain)]' \
-  "the confidential client must require the exact portfolio origin"
+require_count 1 '^[[:space:]]*var[.]identity_reference_bff_application_origins[[:space:]]*==[[:space:]]*tolist[(]\[format[(]"https://%s",[[:space:]]*var[.]base_domain[)]\][)][[:space:]]*$' "$core_variables" \
+  "the confidential client must require the type-stable exact portfolio origin"
+reject '^[[:space:]]*var[.]identity_reference_bff_application_origins[[:space:]]*==[[:space:]]*\[format[(]"https://%s",[[:space:]]*var[.]base_domain[)]\][[:space:]]*$' "$core_variables" \
+  "the confidential client must reject the type-unstable tuple comparison"
 require_fixed "$runtime_variables" 'var.enable_identity_delivery_foundation &&' \
   "the runtime must require the delivery foundation"
 require_fixed "$runtime_variables" 'var.identity_api_image_platform == "linux/arm64"' \
