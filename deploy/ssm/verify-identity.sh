@@ -4,6 +4,14 @@ IFS=$'\n\t'
 umask 077
 set +x
 
+docker_template_open="$(printf '%s%s' '{' '{')"
+docker_template_close="$(printf '%s%s' '}' '}')"
+readonly docker_template_open docker_template_close
+readonly docker_running_template="${docker_template_open}.State.Running${docker_template_close}"
+readonly docker_health_template="${docker_template_open}if .State.Health${docker_template_close}${docker_template_open}.State.Health.Status${docker_template_close}${docker_template_open}end${docker_template_close}"
+readonly docker_health_status_template="${docker_template_open}.State.Health.Status${docker_template_close}"
+readonly docker_restart_template="${docker_template_open}.RestartCount${docker_template_close}"
+
 readonly compose_file=/opt/platform/identity/current/compose.yml
 readonly project=identity-production
 readonly restart_state=/var/lib/platform/identity-container-restarts
@@ -39,15 +47,15 @@ stage=IdentityContainerFailure
 mapfile -t container_ids < <("${compose[@]}" ps --quiet)
 [[ "${#container_ids[@]}" == 5 ]]
 for container_id in "${container_ids[@]}"; do
-  [[ "$(docker inspect --format '{{.State.Running}}' "$container_id")" == true ]]
-  health="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$container_id")"
+  [[ "$(docker inspect --format "$docker_running_template" "$container_id")" == true ]]
+  health="$(docker inspect --format "$docker_health_template" "$container_id")"
   [[ -z "$health" || "$health" == healthy ]]
 done
 
 stage=IdentityContainerRestart
 restart_total=0
 for container_id in "${container_ids[@]}"; do
-  restart_total=$((restart_total + $(docker inspect --format '{{.RestartCount}}' "$container_id")))
+  restart_total=$((restart_total + $(docker inspect --format "$docker_restart_template" "$container_id")))
 done
 if [[ -f "$restart_state" ]]; then
   read -r prior_restart_total <"$restart_state"
@@ -65,10 +73,10 @@ df -P / | awk 'NR == 2 { gsub(/%/, "", $5); exit !($5 < 85) }'
 
 stage=IdentityPostgresReachabilityFailure
 postgres_id="$("${compose[@]}" ps --quiet postgres)"
-[[ -n "$postgres_id" && "$(docker inspect --format '{{.State.Health.Status}}' "$postgres_id")" == healthy ]]
+[[ -n "$postgres_id" && "$(docker inspect --format "$docker_health_status_template" "$postgres_id")" == healthy ]]
 stage=IdentityRedisReachabilityFailure
 redis_id="$("${compose[@]}" ps --quiet redis)"
-[[ -n "$redis_id" && "$(docker inspect --format '{{.State.Health.Status}}' "$redis_id")" == healthy ]]
+[[ -n "$redis_id" && "$(docker inspect --format "$docker_health_status_template" "$redis_id")" == healthy ]]
 redis_probe="reference-bff:production:portfolio:identity:verifier:$RANDOM$RANDOM"
 "${compose[@]}" exec --no-TTY redis sh -eu -c '
   export REDISCLI_AUTH="$(cat /run/secrets/redis/bff_password)"

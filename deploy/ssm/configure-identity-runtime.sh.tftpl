@@ -4,6 +4,28 @@ IFS=$'\n\t'
 umask 077
 set +x
 
+write_b64gzip() {
+  local encoded="$1" destination="$2" mode="$3" temporary="$2.tmp.$$" expected_metadata
+  expected_metadata="$${mode#0}:$(id -u):$(id -g)"
+  rm -f -- "$temporary"
+  install -m "$mode" /dev/null "$temporary"
+  if ! printf '%s' "$encoded" | base64 --decode | gzip --decompress >"$temporary"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  [[ -f "$temporary" && ! -L "$temporary" && "$(stat -c '%a:%u:%g' "$temporary")" == "$expected_metadata" ]]
+  mv -Tf -- "$temporary" "$destination"
+}
+
+if [[ "$*" == --compressed-payload-fixture ]]; then
+  fixture_root="$PLATFORM_IDENTITY_COMPRESSED_PAYLOAD_TEST_ROOT"
+  [[ "$fixture_root" == /tmp/* && -d "$fixture_root" && ! -L "$fixture_root" ]]
+  [[ "$fixture_root" == "$(realpath -e -- "$fixture_root")" ]]
+  write_b64gzip "$PLATFORM_IDENTITY_COMPRESSED_PAYLOAD" "$fixture_root/result" 0600
+  printf 'Identity compressed-payload fixture completed.\n'
+  exit 0
+fi
+
 if [[ "$*" == --transaction-fixture ]]; then
   fixture_root="$PLATFORM_IDENTITY_CONFIGURATION_TEST_ROOT"
   [[ "$fixture_root" == /tmp/* && -d "$fixture_root" && ! -L "$fixture_root" ]]
@@ -296,20 +318,14 @@ install -d -m 0750 -o root -g 10001 "$staged_generation/secrets/database" "$stag
 install -d -m 0750 -o root -g 999 "$staged_generation/secrets/redis-server" "$staged_generation/tls/redis-server" "$staged_generation/tls/postgres-server"
 install -d -m 0750 -o root -g 65532 "$staged_generation/secrets/backup"
 
-write_b64() {
-  local encoded="$1" destination="$2" mode="$3" temporary="$2.tmp"
-  printf '%s' "$encoded" | base64 --decode >"$temporary"
-  chmod "$mode" "$temporary"
-  mv -f -- "$temporary" "$destination"
-}
-write_b64 '${compose_b64}' "$staged_generation/compose.yml" 0644
-write_b64 '${nginx_b64}' "$staged_generation/identity-runtime.conf.staged" 0644
-write_b64 '${pgbackrest_b64}' "$staged_generation/pgbackrest.conf" 0440
+write_b64gzip '${compose_b64gzip}' "$staged_generation/compose.yml" 0644
+write_b64gzip '${nginx_b64gzip}' "$staged_generation/identity-runtime.conf.staged" 0644
+write_b64gzip '${pgbackrest_b64gzip}' "$staged_generation/pgbackrest.conf" 0440
 chown root:65532 "$staged_generation/pgbackrest.conf"
-write_b64 '${postgres_roles_b64}' "$staged_generation/postgres-roles.sql" 0600
-write_b64 '${postgres_hba_b64}' "$staged_generation/postgres-hba.conf" 0644
-write_b64 '${pgbackrest_passwd_b64}' "$staged_generation/pgbackrest-passwd" 0644
-write_b64 '${launcher_b64}' "$staged_generation/identity-launcher.py" 0555
+write_b64gzip '${postgres_roles_b64gzip}' "$staged_generation/postgres-roles.sql" 0600
+write_b64gzip '${postgres_hba_b64gzip}' "$staged_generation/postgres-hba.conf" 0644
+write_b64gzip '${pgbackrest_passwd_b64gzip}' "$staged_generation/pgbackrest-passwd" 0644
+write_b64gzip '${launcher_b64gzip}' "$staged_generation/identity-launcher.py" 0555
 
 fetch_secret() {
   local secret_arn="$1" destination="$2"
@@ -402,11 +418,11 @@ validate_server_identity() {
 validate_server_identity "$staged_generation/tls/postgres-server" postgres
 validate_server_identity "$staged_generation/tls/redis-server" redis
 
-write_b64 '${systemd_unit_b64}' "$work_root/active/etc/systemd/system/identity-stack.service" 0644
-write_b64 '${verify_release_b64}' "$work_root/active/usr/local/libexec/platform/identity-verify-release" 0755
-write_b64 '${health_verify_b64}' "$work_root/active/usr/local/libexec/platform/identity-health-verify" 0755
-write_b64 '${pgbackrest_sidecar_b64}' "$work_root/active/usr/local/libexec/platform/pgbackrest-sidecar" 0755
-write_b64 '${docker_service_b64}' "$work_root/active/etc/systemd/system/docker.service" 0644
+write_b64gzip '${systemd_unit_b64gzip}' "$work_root/active/etc/systemd/system/identity-stack.service" 0644
+write_b64gzip '${verify_release_b64gzip}' "$work_root/active/usr/local/libexec/platform/identity-verify-release" 0755
+write_b64gzip '${health_verify_b64gzip}' "$work_root/active/usr/local/libexec/platform/identity-health-verify" 0755
+write_b64gzip '${pgbackrest_sidecar_b64gzip}' "$work_root/active/usr/local/libexec/platform/pgbackrest-sidecar" 0755
+write_b64gzip '${docker_service_b64gzip}' "$work_root/active/etc/systemd/system/docker.service" 0644
 bash -n "$work_root/active/usr/local/libexec/platform/identity-verify-release"
 bash -n "$work_root/active/usr/local/libexec/platform/identity-health-verify"
 bash -n "$work_root/active/usr/local/libexec/platform/pgbackrest-sidecar"

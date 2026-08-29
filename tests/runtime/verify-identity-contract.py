@@ -43,6 +43,7 @@ iam = read("infra/modules/identity_production/iam.tf")
 monitoring = read("infra/modules/identity_production/monitoring.tf")
 module_variables = read("infra/modules/identity_production/variables.tf")
 runtime_variables = read("infra/live/production/runtime/variables.tf")
+runtime_identity = read("infra/live/production/runtime/identity.tf")
 nginx = read("config/nginx/identity-runtime.conf.tftpl")
 runtime_fixture = read("tests/runtime/check-identity-fixtures.sh")
 
@@ -145,6 +146,42 @@ require(configure.index("validate_server_identity") < configure.index("transacti
 for purpose_path in ("secrets/redis-server", "secrets/redis-client", "tls/redis-server", "tls/redis-client", "tls/postgres-server", "tls/postgres-client"):
     require(purpose_path in configure)
 
+require(runtime_identity.count("base64gzip(") == 12)
+require("base64encode(" not in runtime_identity)
+for payload in (
+    "compose",
+    "nginx",
+    "pgbackrest",
+    "systemd_unit",
+    "postgres_roles",
+    "postgres_hba",
+    "launcher",
+    "verify_release",
+    "health_verify",
+    "pgbackrest_sidecar",
+    "docker_service",
+    "pgbackrest_passwd",
+):
+    require(f"{payload}_b64gzip" in runtime_identity)
+    require(f"write_b64gzip '${{{payload}_b64gzip}}'" in configure)
+require(configure.count("write_b64gzip '") == 12)
+for fixed in (
+    "write_b64gzip() {",
+    'expected_metadata="$${mode#0}:$(id -u):$(id -g)"',
+    'install -m "$mode" /dev/null "$temporary"',
+    "if ! printf '%s' \"$encoded\" | base64 --decode | gzip --decompress >\"$temporary\"; then",
+    'rm -f -- "$temporary"',
+    '[[ -f "$temporary" && ! -L "$temporary" && "$(stat -c \'%a:%u:%g\' "$temporary")" == "$expected_metadata" ]]',
+    'mv -Tf -- "$temporary" "$destination"',
+    "--compressed-payload-fixture",
+):
+    require(fixed in configure)
+require("write_b64()" not in configure)
+require("base64 --decode >" not in configure)
+require('condition     = length(base64encode(local.rendered_document_contents[each.key])) <= 81920' in documents)
+require('error_message = "The rendered UTF-8 SSM document must not exceed 61,440 bytes."' in documents)
+require(documents.count("rendered_document_contents") == 3)
+
 for fixed in (
     "__IDENTITY_API_REPOSITORY_URL__",
     "__IDENTITY_BFF_REPOSITORY_URL__",
@@ -196,6 +233,32 @@ for command in ("GET", "SET", "GETDEL", "DEL", "EVAL"):
     require(command in verify)
 require("reference-bff:production:portfolio:identity:verifier" in verify)
 require("SELECT version_num FROM identity.alembic_version" in verify)
+require("{{" not in verify)
+for fixed in (
+    "docker_template_open=\"$(printf '%s%s' '{' '{')\"",
+    "docker_template_close=\"$(printf '%s%s' '}' '}')\"",
+    'readonly docker_running_template="${docker_template_open}.State.Running${docker_template_close}"',
+    'readonly docker_health_template="${docker_template_open}if .State.Health${docker_template_close}${docker_template_open}.State.Health.Status${docker_template_close}${docker_template_open}end${docker_template_close}"',
+    'readonly docker_health_status_template="${docker_template_open}.State.Health.Status${docker_template_close}"',
+    'readonly docker_restart_template="${docker_template_open}.RestartCount${docker_template_close}"',
+    'docker inspect --format "$docker_running_template"',
+    'docker inspect --format "$docker_health_template"',
+    'docker inspect --format "$docker_health_status_template"',
+    'docker inspect --format "$docker_restart_template"',
+):
+    require(fixed in verify)
+require("eval " not in verify)
+docker_template_open = "{" + "{"
+docker_template_close = "}" + "}"
+require(f"{docker_template_open}.State.Running{docker_template_close}" == "{{.State.Running}}")
+require(
+    f"{docker_template_open}if .State.Health{docker_template_close}"
+    f"{docker_template_open}.State.Health.Status{docker_template_close}"
+    f"{docker_template_open}end{docker_template_close}"
+    == "{{if .State.Health}}{{.State.Health.Status}}{{end}}"
+)
+require(f"{docker_template_open}.State.Health.Status{docker_template_close}" == "{{.State.Health.Status}}")
+require(f"{docker_template_open}.RestartCount{docker_template_close}" == "{{.RestartCount}}")
 
 require("mktemp -d /var/lib/platform/identity-restore-rehearsal.XXXXXXXX" in restore)
 require("docker rm -f \"$container\"" in restore and 'rm -rf -- "$restore_root"' in restore)

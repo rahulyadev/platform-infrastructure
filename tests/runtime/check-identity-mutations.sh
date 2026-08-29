@@ -20,6 +20,7 @@ files=(
   deploy/ssm/rollback-identity.sh
   deploy/ssm/verify-identity-release.sh
   deploy/ssm/verify-identity.sh
+  infra/live/production/runtime/identity.tf
   infra/live/production/runtime/variables.tf
   infra/modules/identity_production/documents.tf
   infra/modules/identity_production/iam.tf
@@ -27,7 +28,7 @@ files=(
   infra/modules/identity_production/variables.tf
 )
 
-for mutation in {1..22}; do
+for mutation in {1..31}; do
   root="$temporary/$mutation"
   install -d -m 0700 "$root"
   for file in "${files[@]}"; do
@@ -56,6 +57,15 @@ for mutation in {1..22}; do
     20) sed -i 's/#candidate_inventory\[@\]}" == 2/#candidate_inventory[@]}" == 3/' "$root/deploy/ssm/verify-identity-release.sh" ;;
     21) sed -i '/source_metadata=/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
     22) sed -i 's/all_directories_equal/all_directories_optional/g' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    23) sed -i '0,/base64gzip[(]/s//base64encode(/' "$root/infra/live/production/runtime/identity.tf" ;;
+    24) sed -i 's/ | gzip --decompress//' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    25) sed -i 's/<= 81920/<= 90000/' "$root/infra/modules/identity_production/documents.tf" ;;
+    26) sed -i '/^set +x$/a # {{end}}' "$root/deploy/ssm/verify-identity.sh" ;;
+    27) sed -i 's/[.]State[.]Running/[.]State[.]Stopped/' "$root/deploy/ssm/verify-identity.sh" ;;
+    28) sed -i "s/if ! printf '%s'/if printf '%s'/" "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    29) sed -i 's/mv -Tf -- "$temporary" "$destination"/mv -f -- "$temporary" "$destination"/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    30) sed -i '/condition     = length(base64encode(local[.]rendered_document_contents/d' "$root/infra/modules/identity_production/documents.tf" ;;
+    31) sed -i '/install -m "$mode" \/dev\/null "$temporary"/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
   esac
   if python3 "$repository_root/tests/runtime/verify-identity-contract.py" "$root" >"$temporary/output" 2>&1; then
     printf 'Production Identity mutation probe %d was not rejected safely.\n' "$mutation" >&2
@@ -63,5 +73,14 @@ for mutation in {1..22}; do
   fi
   chmod 0600 "$temporary/output"
   rm -f -- "$temporary/output"
+  if ((mutation >= 23)); then
+    if IDENTITY_DOCUMENT_POLICY_FIXTURE="$root" \
+      bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1; then
+      printf 'Production Identity policy mutation probe %d was not rejected safely.\n' "$mutation" >&2
+      exit 1
+    fi
+    chmod 0600 "$temporary/output"
+    rm -f -- "$temporary/output"
+  fi
 done
 printf 'Production Identity independent mutation probes passed.\n'

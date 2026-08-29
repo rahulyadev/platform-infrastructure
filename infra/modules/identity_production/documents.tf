@@ -105,6 +105,22 @@ locals {
       }
     }
   }
+
+  rendered_document_contents = {
+    for key, document_name in local.document_names : key => jsonencode({
+      schemaVersion = "2.2"
+      description   = "Reviewed fixed ${key} Identity production operation"
+      parameters    = local.document_parameters[key]
+      mainSteps = [{
+        action = "aws:runShellScript"
+        name   = "identity${title(key)}"
+        inputs = {
+          timeoutSeconds = "3600"
+          runCommand     = [local.rendered_document_scripts[key]]
+        }
+      }]
+    })
+  }
 }
 
 resource "aws_ssm_document" "identity" {
@@ -114,24 +130,17 @@ resource "aws_ssm_document" "identity" {
   document_type   = "Command"
   document_format = "JSON"
   target_type     = "/AWS::EC2::Instance"
-  content = jsonencode({
-    schemaVersion = "2.2"
-    description   = "Reviewed fixed ${each.key} Identity production operation"
-    parameters    = local.document_parameters[each.key]
-    mainSteps = [{
-      action = "aws:runShellScript"
-      name   = "identity${title(each.key)}"
-      inputs = {
-        timeoutSeconds = "3600"
-        runCommand     = [local.rendered_document_scripts[each.key]]
-      }
-    }]
-  })
+  content         = local.rendered_document_contents[each.key]
 
   tags = var.tags
 
   lifecycle {
     prevent_destroy = true
+
+    precondition {
+      condition     = length(base64encode(local.rendered_document_contents[each.key])) <= 81920
+      error_message = "The rendered UTF-8 SSM document must not exceed 61,440 bytes."
+    }
   }
 }
 

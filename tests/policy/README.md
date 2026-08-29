@@ -90,6 +90,17 @@ The production runtime root is subject to the same blocking provider and S3
 backend rules. Its state key must be exactly `production/runtime/tofu.tfstate`,
 and it may consume only the approved non-sensitive production-core outputs.
 
+Every payload embedded in the Identity configure document is produced with
+OpenTofu `base64gzip`, decoded through the fixed base64/gzip pipeline into a
+private metadata-checked temporary file, and published atomically only after a
+successful decode. Permanent executable regression proof decompresses every
+payload back to byte-identical canonical source. The document lifecycle guard
+limits the base64 representation to 81,920 characters, which bounds the
+rendered UTF-8 SSM document to 61,440 bytes. The stored verify document contains
+no literal Docker Go-template opener; it constructs the exact running, health,
+health-status, and restart-count templates from safe shell fragments at runtime
+without `eval`, leaving zero undeclared SSM interpolation tokens.
+
 Runtime policy also requires:
 
 - an immutable GitHub OIDC subject built from owner ID, repository ID, and the

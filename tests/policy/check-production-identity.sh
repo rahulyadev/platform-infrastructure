@@ -71,6 +71,83 @@ extract_bracketed_list() {
   '
 }
 
+check_identity_document_bounds() {
+  local runtime_identity_file="$1"
+  local documents_file="$2"
+  local configure_file="$3"
+  local verify_file="$4"
+
+  require_count 12 'base64gzip[(]' "$runtime_identity_file" \
+    "configure payloads must use exactly twelve OpenTofu base64gzip expressions"
+  reject 'base64encode[(]' "$runtime_identity_file" \
+    "configure payloads must not restore uncompressed base64 encoding"
+  require_count 12 '^write_b64gzip '\''\$\{[a-z_]+_b64gzip\}'\''' "$configure_file" \
+    "configure must decode exactly twelve compressed embedded payloads"
+  require_fixed "$configure_file" 'write_b64gzip() {' \
+    "configure must retain the fixed compressed-payload writer"
+  require_fixed "$configure_file" 'expected_metadata="$${mode#0}:$(id -u):$(id -g)"' \
+    "configure must retain exact staged-payload metadata validation"
+  require_fixed "$configure_file" 'install -m "$mode" /dev/null "$temporary"' \
+    "configure must create each private staged payload with its exact mode"
+  require_fixed "$configure_file" 'if ! printf '\''%s'\'' "$encoded" | base64 --decode | gzip --decompress >"$temporary"; then' \
+    "configure must fail closed on fixed base64 and gzip decoding"
+  require_fixed "$configure_file" 'mv -Tf -- "$temporary" "$destination"' \
+    "configure must atomically publish every decoded payload"
+  reject '^[[:space:]]*write_b64[(]|base64 --decode[[:space:]]*>' "$configure_file" \
+    "configure must not restore its raw-base64 writer"
+  require_count 1 '^[[:space:]]*condition[[:space:]]*=[[:space:]]*length[(]base64encode[(]local[.]rendered_document_contents\[each[.]key\][)][)][[:space:]]*<=[[:space:]]*81920[[:space:]]*$' "$documents_file" \
+    "every rendered SSM document must retain the exact 61,440-byte base64-length guard"
+  require_count 1 '^[[:space:]]*error_message[[:space:]]*=[[:space:]]*"The rendered UTF-8 SSM document must not exceed 61,440 bytes[.]"[[:space:]]*$' "$documents_file" \
+    "the rendered SSM document size guard must retain its exact diagnostic"
+
+  if grep -Fq '{{' "$verify_file"; then
+    fail "the stored verify document must contain zero literal undeclared SSM interpolation tokens"
+  fi
+  require_fixed "$verify_file" 'docker_template_open="$(printf '\''%s%s'\'' '\''{'\'' '\''{'\'')"' \
+    "verify must construct the Docker template opener from safe fragments"
+  require_fixed "$verify_file" 'docker_template_close="$(printf '\''%s%s'\'' '\''}'\'' '\''}'\'')"' \
+    "verify must construct the Docker template closer from safe fragments"
+  require_fixed "$verify_file" 'readonly docker_running_template="${docker_template_open}.State.Running${docker_template_close}"' \
+    "verify must construct the exact Docker running template"
+  require_fixed "$verify_file" 'readonly docker_health_template="${docker_template_open}if .State.Health${docker_template_close}${docker_template_open}.State.Health.Status${docker_template_close}${docker_template_open}end${docker_template_close}"' \
+    "verify must construct the exact Docker conditional-health template"
+  require_fixed "$verify_file" 'readonly docker_health_status_template="${docker_template_open}.State.Health.Status${docker_template_close}"' \
+    "verify must construct the exact Docker health-status template"
+  require_fixed "$verify_file" 'readonly docker_restart_template="${docker_template_open}.RestartCount${docker_template_close}"' \
+    "verify must construct the exact Docker restart-count template"
+  reject '(^|[[:space:]])eval([[:space:]]|$)' "$verify_file" \
+    "verify must not evaluate constructed Docker templates as shell code"
+}
+
+if [[ -n "${IDENTITY_DOCUMENT_POLICY_FIXTURE:-}" ]]; then
+  fixture_root="$IDENTITY_DOCUMENT_POLICY_FIXTURE"
+  if [[ "$fixture_root" != /tmp/* || ! -d "$fixture_root" || -L "$fixture_root" \
+    || "$fixture_root" != "$(realpath -e -- "$fixture_root")" ]]; then
+    fail "Identity document policy fixture must be one external real disposable directory"
+  else
+    fixture_files=(
+      infra/live/production/runtime/identity.tf
+      infra/modules/identity_production/documents.tf
+      deploy/ssm/configure-identity-runtime.sh.tftpl
+      deploy/ssm/verify-identity.sh
+    )
+    for fixture_file in "${fixture_files[@]}"; do
+      [[ -f "$fixture_root/$fixture_file" && ! -L "$fixture_root/$fixture_file" ]] \
+        || fail "Identity document policy fixture is missing one required regular source"
+    done
+    if ((failures == 0)); then
+      check_identity_document_bounds \
+        "$fixture_root/infra/live/production/runtime/identity.tf" \
+        "$fixture_root/infra/modules/identity_production/documents.tf" \
+        "$fixture_root/deploy/ssm/configure-identity-runtime.sh.tftpl" \
+        "$fixture_root/deploy/ssm/verify-identity.sh"
+    fi
+  fi
+  ((failures == 0)) || exit 1
+  printf 'Production Identity document policy fixture passed.\n'
+  exit 0
+fi
+
 check_google_idp_normalization() {
   local file="$1"
   local google_block
@@ -131,6 +208,7 @@ core_outputs=infra/live/production/core/outputs.tf
 runtime_values=infra/live/production/runtime/runtime.tfvars
 runtime_variables=infra/live/production/runtime/variables.tf
 runtime_outputs=infra/live/production/runtime/outputs.tf
+runtime_identity=infra/live/production/runtime/identity.tf
 authentication=infra/modules/identity_authentication/main.tf
 custody=infra/modules/identity_secret_custody/main.tf
 production_module=infra/modules/identity_production
@@ -145,17 +223,21 @@ rollback=deploy/ssm/rollback-identity.sh
 backup=deploy/ssm/backup-identity.sh
 restore=deploy/ssm/restore-identity.sh
 release_verifier=deploy/ssm/verify-identity-release.sh
+verify=deploy/ssm/verify-identity.sh
 roles=config/runtime/postgres-roles.sql
 deployment_fixture=tests/deployment/check-identity.sh
 runtime_fixture=tests/runtime/check-identity-fixtures.sh
 
 for file in "$core_values" "$core_variables" "$core_outputs" "$runtime_values" "$runtime_variables" \
-  "$runtime_outputs" "$authentication" "$custody" "$production_module/ecr.tf" \
+  "$runtime_outputs" "$runtime_identity" "$authentication" "$custody" "$production_module/ecr.tf" \
   "$production_module/github_oidc.tf" "$production_module/iam.tf" \
   "$production_module/documents.tf" "$production_module/monitoring.tf" "$compose" "$images" "$nginx" "$pgbackrest" "$production_document" \
-  "$configure" "$deploy" "$rollback" "$backup" "$restore" "$release_verifier" "$roles" "$deployment_fixture" "$runtime_fixture"; do
+  "$configure" "$deploy" "$rollback" "$backup" "$restore" "$release_verifier" "$verify" "$roles" "$deployment_fixture" "$runtime_fixture"; do
   [[ -f "$file" ]] || fail "a required production Identity source file is missing"
 done
+((failures == 0)) || exit 1
+
+check_identity_document_bounds "$runtime_identity" "$production_module/documents.tf" "$configure" "$verify"
 ((failures == 0)) || exit 1
 
 require_count 1 '^[[:space:]]*instance_type[[:space:]]*=[[:space:]]*"t4g[.]medium"[[:space:]]*$' "$core_values" \

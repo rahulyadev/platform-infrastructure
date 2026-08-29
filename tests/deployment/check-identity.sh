@@ -14,6 +14,31 @@ for script in deploy/ssm/*identity*.sh; do bash -n "$script"; done
 bash -n deploy/ssm/configure-identity-runtime.sh.tftpl
 python3 tests/runtime/verify-identity-contract.py . >/dev/null
 
+[[ "$(grep -Fc 'base64gzip(' infra/live/production/runtime/identity.tf)" == 12 ]]
+! grep -Fq 'base64encode(' infra/live/production/runtime/identity.tf
+[[ "$(grep -Ec '^write_b64gzip '\''\$\{[a-z_]+_b64gzip\}'\''' deploy/ssm/configure-identity-runtime.sh.tftpl)" == 12 ]]
+grep -Fq "if ! printf '%s' \"\$encoded\" | base64 --decode | gzip --decompress >\"\$temporary\"; then" \
+  deploy/ssm/configure-identity-runtime.sh.tftpl
+grep -Fq 'install -m "$mode" /dev/null "$temporary"' deploy/ssm/configure-identity-runtime.sh.tftpl
+grep -Fq 'mv -Tf -- "$temporary" "$destination"' deploy/ssm/configure-identity-runtime.sh.tftpl
+grep -Fq 'condition     = length(base64encode(local.rendered_document_contents[each.key])) <= 81920' \
+  infra/modules/identity_production/documents.tf
+! grep -Fq '{{' deploy/ssm/verify-identity.sh
+grep -Fq 'readonly docker_running_template="${docker_template_open}.State.Running${docker_template_close}"' \
+  deploy/ssm/verify-identity.sh
+grep -Fq 'readonly docker_health_template="${docker_template_open}if .State.Health${docker_template_close}${docker_template_open}.State.Health.Status${docker_template_close}${docker_template_open}end${docker_template_close}"' \
+  deploy/ssm/verify-identity.sh
+grep -Fq 'readonly docker_health_status_template="${docker_template_open}.State.Health.Status${docker_template_close}"' \
+  deploy/ssm/verify-identity.sh
+grep -Fq 'readonly docker_restart_template="${docker_template_open}.RestartCount${docker_template_close}"' \
+  deploy/ssm/verify-identity.sh
+docker_template_open="$(printf '%s%s' '{' '{')"
+docker_template_close="$(printf '%s%s' '}' '}')"
+[[ "${docker_template_open}.State.Running${docker_template_close}" == '{{.State.Running}}' ]]
+[[ "${docker_template_open}if .State.Health${docker_template_close}${docker_template_open}.State.Health.Status${docker_template_close}${docker_template_open}end${docker_template_close}" == '{{if .State.Health}}{{.State.Health.Status}}{{end}}' ]]
+[[ "${docker_template_open}.State.Health.Status${docker_template_close}" == '{{.State.Health.Status}}' ]]
+[[ "${docker_template_open}.RestartCount${docker_template_close}" == '{{.RestartCount}}' ]]
+
 grep -Fq 'set +x' deploy/ssm/configure-identity-runtime.sh.tftpl
 grep -Fq 'aws secretsmanager get-secret-value' deploy/ssm/configure-identity-runtime.sh.tftpl
 ! grep -Eq -- '--secret-string|--value[[:space:]]+.*secret|set -x' deploy/ssm/*identity*.sh*
