@@ -39,9 +39,10 @@ locals {
 resource "aws_cognito_identity_provider" "google" {
   count = var.enable_google_federation ? 1 : 0
 
-  user_pool_id  = var.user_pool_id
-  provider_name = "Google"
-  provider_type = "Google"
+  user_pool_id    = var.user_pool_id
+  provider_name   = "Google"
+  provider_type   = "Google"
+  idp_identifiers = []
 
   provider_details = {
     authorize_scopes = "openid email"
@@ -57,6 +58,15 @@ resource "aws_cognito_identity_provider" "google" {
 
   lifecycle {
     prevent_destroy = true
+
+    ignore_changes = [
+      provider_details["attributes_url"],
+      provider_details["attributes_url_add_attributes"],
+      provider_details["authorize_url"],
+      provider_details["oidc_issuer"],
+      provider_details["token_request_method"],
+      provider_details["token_url"],
+    ]
 
     precondition {
       condition = (
