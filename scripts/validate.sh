@@ -74,7 +74,8 @@ bash -n "${shell_scripts[@]}"
 bash -n infra/modules/host/user_data.sh.tftpl
 
 printf 'Checking rendered shell-template syntax...\n'
-for template in deploy/ssm/configure-runtime.sh.tftpl deploy/ssm/enable-tls.sh.tftpl; do
+for template in deploy/ssm/configure-runtime.sh.tftpl deploy/ssm/enable-tls.sh.tftpl \
+  deploy/ssm/configure-identity-runtime.sh.tftpl; do
   rendered="$validation_root/$(basename "$template" .tftpl).rendered.sh"
   perl -pe 's/\$\$\{/\$\{/g; s/\$\{[a-z][a-z0-9_]*\}/placeholder/g' "$template" >"$rendered"
   bash -n "$rendered"
