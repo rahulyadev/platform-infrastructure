@@ -40,6 +40,16 @@ resource inventory is those three blocks plus exactly one
 Cognito data blocks remain forbidden. Cognito provider references may occur
 only inside the exact core, client, and authentication module directories.
 
+The sole Google identity-provider resource explicitly manages an empty
+`idp_identifiers` collection and keeps exactly three caller-controlled
+`provider_details` entries: scopes, client ID, and client secret. AWS provider
+6.60.0 retains six additional Google Describe-response URL/method entries in
+that map, so the lifecycle ignores only those six indexed response elements.
+The complete map, caller-controlled entries, attribute mapping, identifiers,
+provider identity, and pool binding remain managed, and `prevent_destroy`
+remains mandatory. Both Cognito policy gates enforce this narrow normalization
+boundary and reject broad or additional lifecycle ignores.
+
 The repository must contain exactly one normalized local source reference to
 each published Cognito core/client module, including equivalent relative path
 spellings, and both may exist only in `infra/live/production/core/main.tf`. The

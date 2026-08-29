@@ -27,6 +27,104 @@ reject() {
   fi
 }
 
+require_text_count() {
+  local actual
+  actual="$(grep -Ec -- "$2" <<<"$3" || true)"
+  [[ "$actual" == "$1" ]] || fail "$4"
+}
+
+extract_braced_block() {
+  local pattern="$1"
+
+  awk -v pattern="$pattern" '
+    !capturing && $0 ~ pattern { capturing = 1 }
+    capturing {
+      print
+      line = $0
+      opens = gsub(/\{/, "{", line)
+      line = $0
+      closes = gsub(/\}/, "}", line)
+      depth += opens - closes
+      if (depth == 0) {
+        exit
+      }
+    }
+  '
+}
+
+extract_bracketed_list() {
+  local pattern="$1"
+
+  awk -v pattern="$pattern" '
+    !capturing && $0 ~ pattern { capturing = 1 }
+    capturing {
+      print
+      line = $0
+      opens = gsub(/\[/, "[", line)
+      line = $0
+      closes = gsub(/\]/, "]", line)
+      depth += opens - closes
+      if (depth == 0) {
+        exit
+      }
+    }
+  '
+}
+
+check_google_idp_normalization() {
+  local file="$1"
+  local google_block
+  local provider_details_block
+  local ignore_list
+
+  google_block="$(extract_braced_block '^[[:space:]]*resource[[:space:]]+"aws_cognito_identity_provider"[[:space:]]+"google"[[:space:]]*\{' <"$file")"
+  if [[ -z "$google_block" ]]; then
+    fail "Google IdP normalization requires the sole exact resource block"
+    return
+  fi
+
+  require_text_count 1 '^[[:space:]]*user_pool_id[[:space:]]*=[[:space:]]*var[.]user_pool_id[[:space:]]*$' \
+    "$google_block" "Google IdP normalization must retain the managed pool binding"
+  require_text_count 1 '^[[:space:]]*provider_name[[:space:]]*=[[:space:]]*"Google"[[:space:]]*$' \
+    "$google_block" "Google IdP normalization must retain the managed provider name"
+  require_text_count 1 '^[[:space:]]*provider_type[[:space:]]*=[[:space:]]*"Google"[[:space:]]*$' \
+    "$google_block" "Google IdP normalization must retain the managed provider type"
+  require_text_count 1 '^[[:space:]]*idp_identifiers[[:space:]]*=[[:space:]]*\[\][[:space:]]*$' \
+    "$google_block" "Google IdP normalization must explicitly manage one empty identifier collection"
+  require_text_count 1 '^[[:space:]]*idp_identifiers[[:space:]]*=' \
+    "$google_block" "Google IdP normalization must contain exactly one identifier assignment"
+  require_text_count 1 '^[[:space:]]*prevent_destroy[[:space:]]*=[[:space:]]*true[[:space:]]*$' \
+    "$google_block" "Google IdP normalization must retain prevent_destroy"
+
+  provider_details_block="$(extract_braced_block '^[[:space:]]*provider_details[[:space:]]*=[[:space:]]*\{' <<<"$google_block")"
+  require_text_count 1 '^[[:space:]]*provider_details[[:space:]]*=[[:space:]]*\{[[:space:]]*$' \
+    "$google_block" "Google IdP must retain exactly one request-controlled provider-details map"
+  require_text_count 3 '^[[:space:]]{4}[a-z_]+[[:space:]]*=' \
+    "$provider_details_block" "Google IdP provider details must contain exactly three request-controlled keys"
+  require_text_count 1 '^[[:space:]]*authorize_scopes[[:space:]]*=[[:space:]]*"openid email"[[:space:]]*$' \
+    "$provider_details_block" "Google IdP must retain the managed authorize scopes"
+  require_text_count 1 '^[[:space:]]*client_id[[:space:]]*=[[:space:]]*try[(]local[.]google_credentials[.]client_id,[[:space:]]*null[)][[:space:]]*$' \
+    "$provider_details_block" "Google IdP must retain the managed client ID expression"
+  require_text_count 1 '^[[:space:]]*client_secret[[:space:]]*=[[:space:]]*try[(]local[.]google_credentials[.]client_secret,[[:space:]]*null[)][[:space:]]*$' \
+    "$provider_details_block" "Google IdP must retain the managed client-secret expression"
+
+  require_text_count 1 '^[[:space:]]*ignore_changes[[:space:]]*=[[:space:]]*\[[[:space:]]*$' \
+    "$google_block" "Google IdP normalization must contain exactly one narrow ignore list"
+  require_text_count 1 '^[[:space:]]*ignore_changes[[:space:]]*=' \
+    "$google_block" "Google IdP normalization must not add a second or broad ignore rule"
+  ignore_list="$(extract_bracketed_list '^[[:space:]]*ignore_changes[[:space:]]*=[[:space:]]*\[' <<<"$google_block")"
+  require_text_count 6 '^[[:space:]]*provider_details\["[a-z_]+"\],[[:space:]]*$' \
+    "$ignore_list" "Google IdP normalization must ignore exactly six indexed response-only fields"
+  require_text_count 6 ',[[:space:]]*$' \
+    "$ignore_list" "Google IdP normalization must contain no broad or additional ignore entries"
+
+  local response_field
+  for response_field in attributes_url attributes_url_add_attributes authorize_url oidc_issuer token_request_method token_url; do
+    require_text_count 1 "^[[:space:]]*provider_details\\[\"$response_field\"\\],[[:space:]]*$" \
+      "$ignore_list" "Google IdP normalization is missing or duplicating a required response-only ignore"
+  done
+}
+
 core_values=infra/live/production/core/production.tfvars
 core_variables=infra/live/production/core/variables.tf
 core_outputs=infra/live/production/core/outputs.tf
@@ -118,10 +216,19 @@ require_count 3 '^[[:space:]]*prevent_destroy[[:space:]]*=[[:space:]]*true' "$au
   "certificate, Google provider, and domain destruction guards must remain"
 require_fixed "$authentication" 'provider = aws.us_east_1' \
   "the auth certificate must use the us-east-1 alias"
-require_fixed "$authentication" 'provider_name = "Google"' \
+require_count 1 '^[[:space:]]*provider_name[[:space:]]*=[[:space:]]*"Google"[[:space:]]*$' "$authentication" \
   "the sole Cognito identity provider must be Google"
 reject 'resource "aws_route53|"(COGNITO|Facebook|LoginWithAmazon|SignInWithApple|SAML)"' "$authentication" \
   "authentication source must not manage DNS or add another identity provider"
+
+check_google_idp_normalization "$authentication"
+if [[ -n "${GOOGLE_IDP_POLICY_FIXTURE:-}" ]]; then
+  if [[ "$GOOGLE_IDP_POLICY_FIXTURE" != /tmp/* || ! -f "$GOOGLE_IDP_POLICY_FIXTURE" || -L "$GOOGLE_IDP_POLICY_FIXTURE" ]]; then
+    fail "Google IdP policy fixture must be one external regular disposable file"
+  else
+    check_google_idp_normalization "$GOOGLE_IDP_POLICY_FIXTURE"
+  fi
+fi
 
 require_count 1 '^[[:space:]]*resource "aws_secretsmanager_secret" "reference_bff_client"' "$custody" \
   "secret custody must contain one metadata resource"
