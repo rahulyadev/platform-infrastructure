@@ -46,6 +46,48 @@ runtime_variables = read("infra/live/production/runtime/variables.tf")
 runtime_identity = read("infra/live/production/runtime/identity.tf")
 nginx = read("config/nginx/identity-runtime.conf.tftpl")
 runtime_fixture = read("tests/runtime/check-identity-fixtures.sh")
+oidc = read("infra/modules/identity_production/github_oidc.tf")
+
+# Independently consume the entire operative trust grammar. Comments cannot
+# supply an omitted guard, and extra attributes/blocks/principals cannot hide.
+oidc_tokens = re.findall(
+    r'"(?:\\.|[^"\\])*"|/\*.*?\*/|//[^\n]*|\#[^\n]*|[A-Za-z_][A-Za-z_0-9.-]*|[^\s]',
+    oidc,
+    re.DOTALL,
+)
+oidc_tokens = [token for token in oidc_tokens if not token.startswith(("#", "//", "/*"))]
+oidc_cursor = 0
+
+
+def consume_oidc(*expected: str) -> None:
+    global oidc_cursor
+    require(oidc_tokens[oidc_cursor:oidc_cursor + len(expected)] == list(expected))
+    oidc_cursor += len(expected)
+
+
+consume_oidc(
+    "locals", "{", "github_subject", "=",
+    '"repo:${var.github_owner}@${var.github_owner_id}/${var.github_repository}@${var.github_repository_id}:environment:${var.github_environment}"',
+    "}", "data", '"aws_iam_policy_document"', '"github_assume"', "{", "statement", "{",
+    "effect", "=", '"Allow"', "actions", "=", "[", '"sts:AssumeRoleWithWebIdentity"', "]",
+    "principals", "{", "type", "=", '"Federated"', "identifiers", "=", "[",
+    "var.github_oidc_provider_arn", "]", "}",
+)
+for claim, value in (
+    ("aud", ('"sts.amazonaws.com"',)),
+    ("sub", ("local.github_subject",)),
+    ("repository_owner_id", ("tostring", "(", "var.github_owner_id", ")")),
+    ("repository_id", ("tostring", "(", "var.github_repository_id", ")")),
+):
+    consume_oidc("condition", "{", "test", "=", '"StringEquals"', "variable", "=",
+                 f'"token.actions.githubusercontent.com:{claim}"', "values", "=", "[",
+                 *value, "]", "}")
+consume_oidc(
+    "}", "}", "resource", '"aws_iam_role"', '"github_identity_deployer"', "{",
+    "name", "=", '"${var.name_prefix}-identity-deployer"', "assume_role_policy", "=",
+    "data.aws_iam_policy_document.github_assume.json", "tags", "=", "var.tags", "}",
+)
+require(oidc_cursor == len(oidc_tokens))
 
 for fixed in (
     'API_UID = 10001',
