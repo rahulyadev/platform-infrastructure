@@ -169,3 +169,21 @@ AWS access. Each complete disposable mutation fixture first passes its pristine
 verifier (including the unchanged runtime-fixture input), then rejects exactly
 its intended mutation. These tests do not request an OIDC token or prove actual
 federation; live trust changes require separate review and apply authority.
+
+The separate `PublishIdentityImages` statement permits exactly six ECR actions:
+`BatchCheckLayerAvailability`, `BatchGetImage`, `CompleteLayerUpload`,
+`InitiateLayerUpload`, `PutImage`, and `UploadLayerPart`, only on the existing
+Identity API/BFF repository ARNs. `BatchGetImage` supports the manifest reads in
+[AWS's required push permissions](https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-push-iam.html).
+The API-required `GetAuthorizationToken` wildcard remains in its separate
+statement. Layer downloads, image/repository deletion, extra actions/statements,
+wildcard or third/cross-repository grants, and changed policy/role bindings are
+rejected. Host pull permissions remain a distinct, unchanged contract.
+Both independent gates consume the entire operative publisher document and its
+binding; host actions and comments cannot satisfy them. Backend-disabled HCL
+evaluation proves the actual six-action list and two-repository comprehension
+using local ARN fixtures, without AWS access. All 51 prior pristine mutation
+controls remain, plus 25 publisher mutations that each first pass pristine and
+then fail both independent gates with value-free diagnostics. These source and
+policy-evaluation proofs do not perform registry login, federation, or image
+operations and do not authorize a live policy change.
