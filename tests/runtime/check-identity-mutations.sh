@@ -30,7 +30,7 @@ files=(
   tests/runtime/check-identity-fixtures.sh
 )
 
-for mutation in {1..51}; do
+for mutation in {1..76}; do
   root="$temporary/$mutation"
   install -d -m 0700 "$root"
   for file in "${files[@]}"; do
@@ -43,8 +43,11 @@ for mutation in {1..51}; do
   if ((mutation >= 23 && mutation <= 31)); then
     IDENTITY_DOCUMENT_POLICY_FIXTURE="$root" \
       bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1
-  elif ((mutation >= 32)); then
+  elif ((mutation >= 32 && mutation <= 51)); then
     IDENTITY_OIDC_POLICY_FIXTURE="$root/infra/modules/identity_production/github_oidc.tf" \
+      bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1
+  elif ((mutation >= 52)); then
+    IDENTITY_PUBLISHER_POLICY_FIXTURE="$root/infra/modules/identity_production/iam.tf" \
       bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1
   fi
   case "$mutation" in
@@ -79,7 +82,7 @@ for mutation in {1..51}; do
     29) sed -i 's/mv -Tf -- "$temporary" "$destination"/mv -f -- "$temporary" "$destination"/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
     30) sed -i '/condition     = length(base64encode(local[.]rendered_document_contents/d' "$root/infra/modules/identity_production/documents.tf" ;;
     31) sed -i '/install -m "$mode" \/dev\/null "$temporary"/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
-    *)
+    3[2-9]|4[0-9]|5[01])
       python3 - "$root/infra/modules/identity_production/github_oidc.tf" "$mutation" <<'PY'
 import pathlib
 import sys
@@ -126,6 +129,58 @@ if old not in source or old == new:
 path.write_text(source.replace(old, new, 1), encoding="utf-8")
 PY
       ;;
+    *)
+      python3 - "$root/infra/modules/identity_production/iam.tf" "$mutation" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+publisher, separator, host = source.partition('data "aws_iam_policy_document" "host_identity_runtime"')
+start = publisher.index('  statement {\n    sid    = "PublishIdentityImages"')
+end = publisher.index('  statement {\n    sid    = "RunReviewedIdentityDocuments"')
+statement = publisher[start:end]
+manifest = '      "ecr:BatchGetImage",\n'
+scope = 'resources = [for repository in aws_ecr_repository.identity : repository.arn]'
+binding = '''resource "aws_iam_role_policy" "github_identity_deployer" {
+  name   = "${var.name_prefix}-identity-deployer"
+  role   = aws_iam_role.github_identity_deployer.id
+  policy = data.aws_iam_policy_document.github_identity_deployer.json
+}
+'''
+mutations = {
+    52: (manifest, ''),
+    53: (manifest, '      # "ecr:BatchGetImage",\n'),
+    54: (manifest, manifest + '      "ecr:DescribeImages",\n'),
+    55: (manifest, manifest + '      "ecr:GetDownloadUrlForLayer",\n'),
+    56: (manifest, manifest + '      "ecr:BatchDeleteImage",\n'),
+    57: (manifest, manifest + '      "ecr:DeleteRepository",\n'),
+    58: (manifest, '      "ecr:*",\n'),
+    59: (scope, 'resources = ["*"]'),
+    60: (scope, 'resources = concat([for repository in aws_ecr_repository.identity : repository.arn], ["arn:aws:ecr:ap-south-1:000000000000:repository/other"])'),
+    61: (scope, 'resources = ["arn:aws:ecr:ap-south-1:000000000000:repository/platform-infrastructure-production-identity-api"]'),
+    62: (scope, 'resources = ["arn:aws:ecr:us-east-1:000000000000:repository/platform-infrastructure-production-identity-api"]'),
+    63: (statement, statement + '  statement { actions = ["ecr:DescribeRepositories"] resources = ["*"] }\n'),
+    64: ('role   = aws_iam_role.github_identity_deployer.id', 'role   = var.instance_role_name'),
+    65: ('policy = data.aws_iam_policy_document.github_identity_deployer.json', 'policy = data.aws_iam_policy_document.host_identity_runtime.json'),
+    66: (statement, statement.replace('effect = "Allow"', 'effect = "Deny"')),
+    67: ('sid    = "PublishIdentityImages"', 'sid    = "OtherPublisher"'),
+    68: (manifest, manifest + manifest),
+    69: (statement, ''),
+    70: ('resources = ["*"]', 'resources = [for repository in aws_ecr_repository.identity : repository.arn]'),
+    71: (manifest, manifest + '      "ssm:SendCommand",\n'),
+    72: (scope, 'resources = [aws_ecr_repository.identity["${var.name_prefix}-identity-api"].arn]'),
+    73: (binding, binding + binding.replace('"github_identity_deployer"', '"additional_publisher"')),
+    74: (statement, '/*\n' + statement + '*/\n'),
+    75: (manifest, '      /* "ecr:BatchGetImage", */\n'),
+    76: (statement, statement + statement),
+}
+old, new = mutations[int(sys.argv[2])]
+if not separator or old not in publisher or old == new:
+    raise SystemExit("Identity publisher mutation setup failed safely.")
+path.write_text(publisher.replace(old, new, 1) + separator + host, encoding="utf-8")
+PY
+      ;;
   esac
   result=0
   if python3 "$repository_root/tests/runtime/verify-identity-contract.py" "$root" >"$temporary/output" 2>&1; then
@@ -146,7 +201,7 @@ PY
     fi
     chmod 0600 "$temporary/output"
     rm -f -- "$temporary/output"
-  elif ((mutation >= 32)); then
+  elif ((mutation >= 32 && mutation <= 51)); then
     if IDENTITY_OIDC_POLICY_FIXTURE="$root/infra/modules/identity_production/github_oidc.tf" \
       bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1; then
       printf 'Production Identity OIDC policy mutation probe %d was not rejected safely.\n' "$mutation" >&2
@@ -154,6 +209,18 @@ PY
     fi
     grep -Fxq 'PRODUCTION IDENTITY POLICY FAILURE: Identity OIDC trust must retain the sole ID-bearing environment subject and exact independent guards' "$temporary/output"
     rm -f -- "$temporary/output"
+  elif ((mutation >= 52)); then
+    result=0
+    if IDENTITY_PUBLISHER_POLICY_FIXTURE="$root/infra/modules/identity_production/iam.tf" \
+      bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1; then
+      printf 'Production Identity publisher policy mutation probe %d was not rejected safely.\n' "$mutation" >&2
+      exit 1
+    else
+      result=$?
+    fi
+    [[ "$result" == 1 && "$(wc -l <"$temporary/output")" == 1 ]]
+    grep -Fxq 'PRODUCTION IDENTITY POLICY FAILURE: Identity publisher must retain exactly six scoped ECR actions and the complete policy binding' "$temporary/output"
+    rm -f -- "$temporary/output"
   fi
 done
-printf 'Production Identity independent mutation probes passed: 51 pristine controls and 51 rejections; 20 OIDC cases also rejected by the independent policy gate.\n'
+printf 'Production Identity independent mutation probes passed: 76 pristine controls and 76 rejections; 20 OIDC and 25 publisher cases also rejected by the independent policy gate.\n'

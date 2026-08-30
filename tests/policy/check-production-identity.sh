@@ -125,6 +125,97 @@ PY
   fi
 }
 
+check_identity_publisher() {
+  if ! python3 - "$1" <<'PY'
+import pathlib
+import re
+import sys
+
+def tokens(source):
+    scanner = re.compile(r'\s+|\#[^\n]*|//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z_0-9.-]*|.', re.S)
+    return [token for token in scanner.findall(source)
+            if not token.isspace() and not token.startswith(('#', '//', '/*'))]
+
+# The complete publisher document and binding are operative source. The host's
+# separate pull permission and comment-only decoys cannot satisfy this contract.
+expected = '''
+data "aws_iam_policy_document" "github_identity_deployer" {
+  statement {
+    sid = "EcrLogin"
+    effect = "Allow"
+    actions = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+  statement {
+    sid = "PublishIdentityImages"
+    effect = "Allow"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:CompleteLayerUpload",
+      "ecr:InitiateLayerUpload",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart",
+    ]
+    resources = [for repository in aws_ecr_repository.identity : repository.arn]
+  }
+  statement {
+    sid = "RunReviewedIdentityDocuments"
+    effect = "Allow"
+    actions = ["ssm:SendCommand",]
+    resources = concat(
+      ["arn:aws:ec2:${var.aws_region}:${var.expected_account_id}:instance/${var.instance_id}"],
+      [for key in ["deploy", "verify", "rollback"] : aws_ssm_document.identity[key].arn],
+    )
+  }
+  statement {
+    sid = "ObserveIdentityCommands"
+    effect = "Allow"
+    actions = ["ssm:GetCommandInvocation", "ssm:ListCommandInvocations",]
+    resources = ["*"]
+  }
+}
+resource "aws_iam_role_policy" "github_identity_deployer" {
+  name = "${var.name_prefix}-identity-deployer"
+  role = aws_iam_role.github_identity_deployer.id
+  policy = data.aws_iam_policy_document.github_identity_deployer.json
+}
+'''
+try:
+    actual, required = tokens(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')), tokens(expected)
+    valid = actual[:len(required)] == required
+    cursor = len(required)
+    for kind, resource_type in (('data', 'aws_iam_policy_document'), ('resource', 'aws_iam_role_policy')):
+        valid = valid and actual[cursor:cursor + 4] == [kind, f'"{resource_type}"', '"host_identity_runtime"', '{']
+        cursor += 4
+        depth = 1
+        while depth and cursor < len(actual):
+            depth += (actual[cursor] == '{') - (actual[cursor] == '}')
+            cursor += 1
+        valid = valid and depth == 0
+    valid = valid and cursor == len(actual)
+except (OSError, UnicodeError):
+    valid = False
+raise SystemExit(0 if valid else 1)
+PY
+  then
+    fail "Identity publisher must retain exactly six scoped ECR actions and the complete policy binding"
+  fi
+}
+
+if [[ -n "${IDENTITY_PUBLISHER_POLICY_FIXTURE:-}" ]]; then
+  fixture_file="$IDENTITY_PUBLISHER_POLICY_FIXTURE"
+  if [[ "$fixture_file" != /tmp/* || ! -f "$fixture_file" || -L "$fixture_file" \
+    || "$fixture_file" != "$(realpath -e -- "$fixture_file")" ]]; then
+    fail "Identity publisher policy fixture must be one external regular disposable file"
+  else
+    check_identity_publisher "$fixture_file"
+  fi
+  ((failures == 0)) || exit 1
+  printf 'Production Identity publisher policy fixture passed.\n'
+  exit 0
+fi
+
 if [[ -n "${IDENTITY_OIDC_POLICY_FIXTURE:-}" ]]; then
   fixture_file="$IDENTITY_OIDC_POLICY_FIXTURE"
   if [[ "$fixture_file" != /tmp/* || ! -f "$fixture_file" || -L "$fixture_file" \
@@ -401,6 +492,7 @@ require_fixed "$production_module/ecr.tf" 'encryption_type = "AES256"' \
 require_fixed "$production_module/ecr.tf" 'prevent_destroy = true' \
   "Identity repositories must retain destruction guards"
 check_identity_oidc_trust "$production_module/github_oidc.tf"
+check_identity_publisher "$production_module/iam.tf"
 reject '(AdministratorAccess|secretsmanager:[*])' "$production_module/iam.tf" \
   "Identity IAM must not contain administrative or wildcard secret permissions"
 require_fixed "$production_module/variables.tf" '!strcontains(lower(arn), "google")' \

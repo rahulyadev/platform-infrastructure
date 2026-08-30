@@ -89,6 +89,58 @@ consume_oidc(
 )
 require(oidc_cursor == len(oidc_tokens))
 
+# Independently consume the publisher's four statements and exact role binding.
+# Host pull actions are outside this grammar and cannot supply publisher grants.
+publisher_tokens = re.findall(
+    r'"(?:\\.|[^"\\])*"|/\*.*?\*/|//[^\n]*|\#[^\n]*|[A-Za-z_][A-Za-z_0-9.-]*|[^\s]',
+    iam,
+    re.DOTALL,
+)
+publisher_tokens = [token for token in publisher_tokens if not token.startswith(("#", "//", "/*"))]
+publisher_cursor = 0
+
+
+def consume_publisher(*expected: str) -> None:
+    global publisher_cursor
+    require(publisher_tokens[publisher_cursor:publisher_cursor + len(expected)] == list(expected))
+    publisher_cursor += len(expected)
+
+
+consume_publisher(
+    "data", '"aws_iam_policy_document"', '"github_identity_deployer"', "{",
+    "statement", "{", "sid", "=", '"EcrLogin"', "effect", "=", '"Allow"',
+    "actions", "=", "[", '"ecr:GetAuthorizationToken"', "]", "resources", "=", "[", '"*"', "]", "}",
+    "statement", "{", "sid", "=", '"PublishIdentityImages"', "effect", "=", '"Allow"',
+    "actions", "=", "[",
+)
+for action in (
+    "BatchCheckLayerAvailability", "BatchGetImage", "CompleteLayerUpload",
+    "InitiateLayerUpload", "PutImage", "UploadLayerPart",
+):
+    consume_publisher(f'"ecr:{action}"', ",")
+consume_publisher(
+    "]", "resources", "=", "[", "for", "repository", "in", "aws_ecr_repository.identity", ":", "repository.arn", "]", "}",
+    "statement", "{", "sid", "=", '"RunReviewedIdentityDocuments"', "effect", "=", '"Allow"',
+    "actions", "=", "[", '"ssm:SendCommand"', ",", "]", "resources", "=", "concat", "(",
+    "[", '"arn:aws:ec2:${var.aws_region}:${var.expected_account_id}:instance/${var.instance_id}"', "]", ",",
+    "[", "for", "key", "in", "[", '"deploy"', ",", '"verify"', ",", '"rollback"', "]", ":",
+    "aws_ssm_document.identity", "[", "key", "]", ".", "arn", "]", ",", ")", "}",
+    "statement", "{", "sid", "=", '"ObserveIdentityCommands"', "effect", "=", '"Allow"',
+    "actions", "=", "[", '"ssm:GetCommandInvocation"', ",", '"ssm:ListCommandInvocations"', ",", "]",
+    "resources", "=", "[", '"*"', "]", "}", "}",
+    "resource", '"aws_iam_role_policy"', '"github_identity_deployer"', "{",
+    "name", "=", '"${var.name_prefix}-identity-deployer"', "role", "=", "aws_iam_role.github_identity_deployer.id",
+    "policy", "=", "data.aws_iam_policy_document.github_identity_deployer.json", "}",
+)
+for kind, resource_type in (("data", "aws_iam_policy_document"), ("resource", "aws_iam_role_policy")):
+    consume_publisher(kind, f'"{resource_type}"', '"host_identity_runtime"', "{")
+    depth = 1
+    while depth and publisher_cursor < len(publisher_tokens):
+        depth += (publisher_tokens[publisher_cursor] == "{") - (publisher_tokens[publisher_cursor] == "}")
+        publisher_cursor += 1
+    require(depth == 0)
+require(publisher_cursor == len(publisher_tokens))
+
 for fixed in (
     'API_UID = 10001',
     'BFF_UID = 10002',

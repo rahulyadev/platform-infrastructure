@@ -24,18 +24,35 @@ import sys
 root, target = map(pathlib.Path, sys.argv[1:])
 source = (root / "infra/modules/identity_production/github_oidc.tf").read_text(encoding="utf-8")
 variables = (root / "infra/modules/identity_production/variables.tf").read_text(encoding="utf-8")
-names = ("github_owner", "github_repository", "github_owner_id", "github_repository_id", "github_environment", "github_oidc_provider_arn")
+iam = (root / "infra/modules/identity_production/iam.tf").read_text(encoding="utf-8")
+ecr = (root / "infra/modules/identity_production/ecr.tf").read_text(encoding="utf-8")
+names = ("github_owner", "github_repository", "github_owner_id", "github_repository_id", "github_environment", "github_oidc_provider_arn", "name_prefix")
 blocks = [re.findall(r'variable "' + name + r'"\s*\{[^{}]*\}', variables) for name in names]
 locals_blocks = re.findall(r'^locals \{\n.*?\n\}', source, re.M | re.S)
 conditions = re.findall(r'condition\s*\{\s*test\s*=\s*"StringEquals"\s*variable\s*=\s*("[^"]+")\s*values\s*=\s*\[([^\]]+)\]\s*\}', source)
 actions = re.findall(r'actions\s*=\s*(\[[^\]]+\])', source)
 principals = re.findall(r'principals\s*\{\s*type\s*=\s*("[^"]+")\s*identifiers\s*=\s*\[([^\]]+)\]\s*\}', source)
 effects = re.findall(r'effect\s*=\s*("[^"]+")', source)
+publisher = re.findall(r'^  statement \{\n\s*sid\s*=\s*"PublishIdentityImages"\n(.*?)^  \}', iam, re.M | re.S)
+ecr_locals = re.findall(r'^locals \{\n.*?\n\}', ecr, re.M | re.S)
 if not (all(len(block) == 1 for block in blocks) and len(locals_blocks) == 1 and len(conditions) == 4
-        and len(actions) == len(principals) == len(effects) == 1):
+        and len(actions) == len(principals) == len(effects) == len(publisher) == len(ecr_locals) == 1):
     raise SystemExit("Identity typed OIDC fixture construction failed safely.")
+publisher_fields = [re.findall(r'\b' + key + r'\s*=\s*(' + pattern + r')', publisher[0], re.S)
+                    for key, pattern in (("effect", '"[^"]+"'), ("actions", r'\[[^\]]+\]'), ("resources", r'\[[^\]]+\]'))]
+if not all(len(field) == 1 for field in publisher_fields):
+    raise SystemExit("Identity typed publisher fixture construction failed safely.")
+publisher_effect, publisher_actions, publisher_resources = (field[0] for field in publisher_fields)
+# Substitute only the AWS resource binding with two local mock ARN objects; the
+# operative action list and repository comprehension are evaluated by OpenTofu.
+publisher_resources = publisher_resources.replace("aws_ecr_repository.identity", "local.publisher_repositories")
 policy = '''
 locals {
+  publisher_repositories = {
+    for name in local.repositories : name => {
+      arn = "arn:aws:ecr:ap-south-1:000000000000:repository/${name}"
+    }
+  }
   oidc_proof = jsonencode({
     subject = local.github_subject
     policy = {
@@ -49,19 +66,22 @@ locals {
         } }
       }]
     }
+    publisher = { Effect = %s, Action = %s, Resource = %s }
   })
 }
 ''' % (effects[0], actions[0], principals[0][0], principals[0][1],
-       '\n'.join(key + ' = ' + value for key, value in conditions))
+       '\n'.join(key + ' = ' + value for key, value in conditions),
+       publisher_effect, publisher_actions, publisher_resources)
 (target / "main.tf").write_text(
     'terraform { required_version = "= 1.12.5" }\n' + '\n'.join(block[0] for block in blocks)
-    + '\n' + locals_blocks[0] + '\n' + policy, encoding="utf-8")
+    + '\n' + locals_blocks[0] + '\n' + ecr_locals[0] + '\n' + policy, encoding="utf-8")
 PY
 TF_DATA_DIR="$temporary/oidc-data" tofu -chdir="$oidc_root" init -backend=false -input=false -no-color >/dev/null
 TF_DATA_DIR="$temporary/oidc-data" \
 TF_VAR_github_owner=rahulyadev TF_VAR_github_repository=identity-service \
 TF_VAR_github_owner_id=66272748 TF_VAR_github_repository_id=1338528841 \
 TF_VAR_github_environment=production TF_VAR_github_oidc_provider_arn=arn:example:github-oidc \
+TF_VAR_name_prefix=platform-infrastructure-production \
   tofu -chdir="$oidc_root" console -no-color <<<'local.oidc_proof' >"$temporary/oidc.console"
 python3 - "$temporary/oidc.console" <<'PY'
 import json
@@ -81,11 +101,19 @@ expected = {
             "token.actions.githubusercontent.com:repository_id": "1338528841",
         }},
     }]},
+    "publisher": {
+        "Effect": "Allow",
+        "Action": ["ecr:BatchCheckLayerAvailability", "ecr:BatchGetImage", "ecr:CompleteLayerUpload",
+                   "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart"],
+        "Resource": [f"arn:aws:ecr:ap-south-1:000000000000:repository/platform-infrastructure-production-identity-{name}"
+                     for name in ("api", "bff")],
+    },
 }
 actual = json.loads(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")))
 if actual != expected:
     raise SystemExit("Identity typed OIDC subject/policy evaluation failed safely.")
 print("Production Identity typed HCL subject and exact trust-policy semantics passed without AWS access.")
+print("Production Identity typed HCL publisher actions and exact two-repository scope passed without AWS access.")
 PY
 
 render_root="$temporary/render"
