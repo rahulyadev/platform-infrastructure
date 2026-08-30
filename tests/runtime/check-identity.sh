@@ -14,6 +14,80 @@ PYTHONPYCACHEPREFIX="$temporary/pycache" python3 -m py_compile config/runtime/id
 python3 tests/runtime/verify-identity-contract.py .
 bash tests/runtime/check-identity-mutations.sh
 
+oidc_root="$temporary/oidc"
+install -d -m 0700 "$oidc_root" "$temporary/oidc-data"
+python3 - "$repository_root" "$oidc_root" <<'PY'
+import pathlib
+import re
+import sys
+
+root, target = map(pathlib.Path, sys.argv[1:])
+source = (root / "infra/modules/identity_production/github_oidc.tf").read_text(encoding="utf-8")
+variables = (root / "infra/modules/identity_production/variables.tf").read_text(encoding="utf-8")
+names = ("github_owner", "github_repository", "github_owner_id", "github_repository_id", "github_environment", "github_oidc_provider_arn")
+blocks = [re.findall(r'variable "' + name + r'"\s*\{[^{}]*\}', variables) for name in names]
+locals_blocks = re.findall(r'^locals \{\n.*?\n\}', source, re.M | re.S)
+conditions = re.findall(r'condition\s*\{\s*test\s*=\s*"StringEquals"\s*variable\s*=\s*("[^"]+")\s*values\s*=\s*\[([^\]]+)\]\s*\}', source)
+actions = re.findall(r'actions\s*=\s*(\[[^\]]+\])', source)
+principals = re.findall(r'principals\s*\{\s*type\s*=\s*("[^"]+")\s*identifiers\s*=\s*\[([^\]]+)\]\s*\}', source)
+effects = re.findall(r'effect\s*=\s*("[^"]+")', source)
+if not (all(len(block) == 1 for block in blocks) and len(locals_blocks) == 1 and len(conditions) == 4
+        and len(actions) == len(principals) == len(effects) == 1):
+    raise SystemExit("Identity typed OIDC fixture construction failed safely.")
+policy = '''
+locals {
+  oidc_proof = jsonencode({
+    subject = local.github_subject
+    policy = {
+      Version = "2012-10-17"
+      Statement = [{
+        Effect = %s
+        Action = %s
+        Principal = { %s = %s }
+        Condition = { StringEquals = {
+          %s
+        } }
+      }]
+    }
+  })
+}
+''' % (effects[0], actions[0], principals[0][0], principals[0][1],
+       '\n'.join(key + ' = ' + value for key, value in conditions))
+(target / "main.tf").write_text(
+    'terraform { required_version = "= 1.12.5" }\n' + '\n'.join(block[0] for block in blocks)
+    + '\n' + locals_blocks[0] + '\n' + policy, encoding="utf-8")
+PY
+TF_DATA_DIR="$temporary/oidc-data" tofu -chdir="$oidc_root" init -backend=false -input=false -no-color >/dev/null
+TF_DATA_DIR="$temporary/oidc-data" \
+TF_VAR_github_owner=rahulyadev TF_VAR_github_repository=identity-service \
+TF_VAR_github_owner_id=66272748 TF_VAR_github_repository_id=1338528841 \
+TF_VAR_github_environment=production TF_VAR_github_oidc_provider_arn=arn:example:github-oidc \
+  tofu -chdir="$oidc_root" console -no-color <<<'local.oidc_proof' >"$temporary/oidc.console"
+python3 - "$temporary/oidc.console" <<'PY'
+import json
+import pathlib
+import sys
+
+subject = "repo:rahulyadev@66272748/identity-service@1338528841:environment:production"
+expected = {
+    "subject": subject,
+    "policy": {"Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Action": ["sts:AssumeRoleWithWebIdentity"],
+        "Principal": {"Federated": "arn:example:github-oidc"},
+        "Condition": {"StringEquals": {
+            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+            "token.actions.githubusercontent.com:sub": subject,
+            "token.actions.githubusercontent.com:repository_owner_id": "66272748",
+            "token.actions.githubusercontent.com:repository_id": "1338528841",
+        }},
+    }]},
+}
+actual = json.loads(json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")))
+if actual != expected:
+    raise SystemExit("Identity typed OIDC subject/policy evaluation failed safely.")
+print("Production Identity typed HCL subject and exact trust-policy semantics passed without AWS access.")
+PY
+
 render_root="$temporary/render"
 install -d -m 0700 "$render_root" "$temporary/tofu-data"
 cat >"$render_root/main.tf" <<'HCL'

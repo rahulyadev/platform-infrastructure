@@ -154,3 +154,18 @@ identity, least IAM and non-Google host secrets, digest-pinned ARM64 support
 images, private hardened state services, exact same-origin Nginx routes, fixed
 SSM/migration/backup/restore operations, and preservation of the existing eight
 alarms. Failures are contract-oriented and never reproduce matching values.
+
+Identity delivery trust uses GitHub's current ID-bearing repository prefix:
+`repo:${var.github_owner}@${var.github_owner_id}/${var.github_repository}@${var.github_repository_id}:environment:${var.github_environment}`.
+The production environment subject is a single exact value; the old name-only
+subject is not an alternative. Independent policy and runtime gates consume the
+operative trust blocks and cardinalities, ignoring comments, and retain exactly
+one Allow statement, the sole federated principal/action, and four StringEquals
+conditions for audience, subject, owner ID, and repository ID. No wildcard,
+StringLike, extra principal/subject, or removed independent guard is accepted.
+Backend-disabled OpenTofu evaluation uses the actual expression and typed module
+inputs to prove the production subject and numeric-ID string conversion without
+AWS access. Each complete disposable mutation fixture first passes its pristine
+verifier (including the unchanged runtime-fixture input), then rejects exactly
+its intended mutation. These tests do not request an OIDC token or prove actual
+federation; live trust changes require separate review and apply authority.

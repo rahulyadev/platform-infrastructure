@@ -71,6 +71,73 @@ extract_bracketed_list() {
   '
 }
 
+check_identity_oidc_trust() {
+  if ! python3 - "$1" <<'PY'
+import pathlib
+import re
+import sys
+
+# Match the entire operative token stream, not comment/string search hits.
+# Quoted HCL templates remain single tokens; whitespace/comments are inert.
+def tokens(source):
+    scanner = re.compile(r'\s+|\#[^\n]*|//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z_0-9.-]*|.', re.S)
+    return [token for token in scanner.findall(source)
+            if not token.isspace() and not token.startswith(('#', '//', '/*'))]
+
+expected = '''
+locals {
+  github_subject = "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repository}@${var.github_repository_id}:environment:${var.github_environment}"
+}
+data "aws_iam_policy_document" "github_assume" {
+  statement {
+    effect = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type = "Federated"
+      identifiers = [var.github_oidc_provider_arn]
+    }
+'''
+for claim, expression in (
+    ('aud', '"sts.amazonaws.com"'),
+    ('sub', 'local.github_subject'),
+    ('repository_owner_id', 'tostring(var.github_owner_id)'),
+    ('repository_id', 'tostring(var.github_repository_id)'),
+):
+    expected += ('condition { test = "StringEquals" variable = '
+                 f'"token.actions.githubusercontent.com:{claim}" values = [{expression}] }}\n')
+expected += '''
+  }
+}
+resource "aws_iam_role" "github_identity_deployer" {
+  name = "${var.name_prefix}-identity-deployer"
+  assume_role_policy = data.aws_iam_policy_document.github_assume.json
+  tags = var.tags
+}
+'''
+try:
+    valid = tokens(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8')) == tokens(expected)
+except (OSError, UnicodeError):
+    valid = False
+raise SystemExit(0 if valid else 1)
+PY
+  then
+    fail "Identity OIDC trust must retain the sole ID-bearing environment subject and exact independent guards"
+  fi
+}
+
+if [[ -n "${IDENTITY_OIDC_POLICY_FIXTURE:-}" ]]; then
+  fixture_file="$IDENTITY_OIDC_POLICY_FIXTURE"
+  if [[ "$fixture_file" != /tmp/* || ! -f "$fixture_file" || -L "$fixture_file" \
+    || "$fixture_file" != "$(realpath -e -- "$fixture_file")" ]]; then
+    fail "Identity OIDC policy fixture must be one external regular disposable file"
+  else
+    check_identity_oidc_trust "$fixture_file"
+  fi
+  ((failures == 0)) || exit 1
+  printf 'Production Identity OIDC policy fixture passed.\n'
+  exit 0
+fi
+
 check_identity_document_bounds() {
   local runtime_identity_file="$1"
   local documents_file="$2"
@@ -333,12 +400,7 @@ require_fixed "$production_module/ecr.tf" 'encryption_type = "AES256"' \
   "Identity repositories must remain encrypted"
 require_fixed "$production_module/ecr.tf" 'prevent_destroy = true' \
   "Identity repositories must retain destruction guards"
-require_fixed "$production_module/github_oidc.tf" 'repo:${var.github_owner}/${var.github_repository}:environment:${var.github_environment}' \
-  "Identity deployment trust must remain environment-scoped"
-require_fixed "$production_module/github_oidc.tf" 'token.actions.githubusercontent.com:repository_owner_id' \
-  "deployment trust must bind the immutable owner ID"
-require_fixed "$production_module/github_oidc.tf" 'token.actions.githubusercontent.com:repository_id' \
-  "deployment trust must bind the immutable repository ID"
+check_identity_oidc_trust "$production_module/github_oidc.tf"
 reject '(AdministratorAccess|secretsmanager:[*])' "$production_module/iam.tf" \
   "Identity IAM must not contain administrative or wildcard secret permissions"
 require_fixed "$production_module/variables.tf" '!strcontains(lower(arn), "google")' \
