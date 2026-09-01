@@ -95,10 +95,17 @@ stable single-weekday differential-backup associations keyed `MON` through
 `SAT`, the unchanged Sunday full backup, and the exact every-30-minutes cron
 for verification. All scheduled associations remain apply-only. Ranges, lists,
 rate-plus-apply-only, immediate verification, missing or duplicate weekdays,
-and additional association resources are rejected. The configure document must
-create and verify the root-owned mode-0755 staged systemd parent before writing
-either unit; missing, late, symlinked, or metadata-weakened parents fail the
-executable contract.
+and additional association resources are rejected. The configure document has
+exactly five manual active-staging writes: two systemd units and three libexec
+helpers. Their manifest-derived parent set must equal exactly
+`etc/systemd/system` and `usr/local/libexec/platform`. One common path creates
+and verifies the complete set as real, non-symlink, root-owned, root-group,
+mode-0755 directories before any of the five writes. Missing, late, undeclared,
+unused, symlink-accepted, or metadata-weakened parents fail both independent
+source gates and the executable contract. The isolated filesystem fixture also
+proves first-run creation, five write successes, exact rerun outcome, rejection
+after either parent is removed, wrong-mode and symlink rejection, and cleanup
+after every injected failure.
 
 Every payload embedded in the Identity configure document is produced with
 OpenTofu `base64gzip`, decoded through the fixed base64/gzip pipeline into a

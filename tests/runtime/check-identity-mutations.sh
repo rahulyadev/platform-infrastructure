@@ -8,6 +8,97 @@ repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 temporary="$(mktemp -d)"
 chmod 0700 "$temporary"
 trap 'rm -rf -- "$temporary"' EXIT
+
+rendered_configure="$temporary/configure-identity-runtime.sh"
+sed 's/\$\${/${/g' "$repository_root/deploy/ssm/configure-identity-runtime.sh.tftpl" >"$rendered_configure"
+chmod 0700 "$rendered_configure"
+
+run_staging_fixture() {
+  local fixture_root="$1"
+  PLATFORM_IDENTITY_STAGING_PARENT_TEST_ROOT="$fixture_root" \
+    bash "$rendered_configure" --active-staging-parent-fixture
+}
+
+assert_staging_fixture_failure() {
+  local fixture_root="$1" removed_parent="${2:-}"
+  local -a environment=("PLATFORM_IDENTITY_STAGING_PARENT_TEST_ROOT=$fixture_root")
+  if [[ -n "$removed_parent" ]]; then
+    environment+=("PLATFORM_IDENTITY_STAGING_PARENT_REMOVE_BEFORE_WRITE=$removed_parent")
+  fi
+  if env "${environment[@]}" bash "$rendered_configure" --active-staging-parent-fixture >"$temporary/output" 2>&1; then
+    printf 'Production Identity active-staging negative fixture was not rejected safely.\n' >&2
+    exit 1
+  fi
+  grep -Fxq 'Identity active-staging parent fixture failed safely.' "$temporary/output"
+  [[ ! -e "$fixture_root/active" && ! -L "$fixture_root/active" ]]
+  rm -f -- "$temporary/output"
+}
+
+staging_success="$temporary/staging-success"
+install -d -m 0700 "$staging_success"
+run_staging_fixture "$staging_success" >"$temporary/output"
+grep -Fxq 'Identity active-staging parent fixture completed.' "$temporary/output"
+python3 - "$staging_success/active" <<'PY'
+import hashlib
+import os
+import pathlib
+import stat
+import sys
+
+root = pathlib.Path(sys.argv[1])
+uid, gid = os.getuid(), os.getgid()
+parents = {
+    "etc/systemd/system": 0o755,
+    "usr/local/libexec/platform": 0o755,
+}
+files = {
+    "etc/systemd/system/identity-stack.service": 0o644,
+    "usr/local/libexec/platform/identity-verify-release": 0o755,
+    "usr/local/libexec/platform/identity-health-verify": 0o755,
+    "usr/local/libexec/platform/pgbackrest-sidecar": 0o755,
+    "etc/systemd/system/docker.service": 0o644,
+}
+for relative, mode in parents.items():
+    path = root / relative
+    info = path.lstat()
+    if not stat.S_ISDIR(info.st_mode) or path.is_symlink() or (stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid) != (mode, uid, gid):
+        raise SystemExit(1)
+for relative, mode in files.items():
+    path = root / relative
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode) or path.is_symlink() or (stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid) != (mode, uid, gid):
+        raise SystemExit(1)
+    if hashlib.sha256(path.read_bytes()).hexdigest() != "1ce34317ffb240600f311bc23275840f6310262d0771d2b719e112bd78641d85":
+        raise SystemExit(1)
+PY
+find "$staging_success/active" -printf '%P:%y:%m:%U:%G\n' | LC_ALL=C sort >"$temporary/staging-first.inventory"
+find "$staging_success/active" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum >>"$temporary/staging-first.inventory"
+run_staging_fixture "$staging_success" >"$temporary/output"
+find "$staging_success/active" -printf '%P:%y:%m:%U:%G\n' | LC_ALL=C sort >"$temporary/staging-second.inventory"
+find "$staging_success/active" -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum >>"$temporary/staging-second.inventory"
+cmp -s "$temporary/staging-first.inventory" "$temporary/staging-second.inventory"
+
+for removed_parent in etc/systemd/system usr/local/libexec/platform; do
+  staging_missing="$temporary/staging-missing-${removed_parent//\//-}"
+  install -d -m 0700 "$staging_missing"
+  assert_staging_fixture_failure "$staging_missing" "$removed_parent"
+done
+
+staging_wrong="$temporary/staging-wrong"
+install -d -m 0700 "$staging_wrong"
+install -d -m 0755 "$staging_wrong/active"
+install -d -m 0755 "$staging_wrong/active/etc/systemd/system"
+chmod 0750 "$staging_wrong/active/etc/systemd/system"
+assert_staging_fixture_failure "$staging_wrong"
+
+staging_symlink="$temporary/staging-symlink"
+install -d -m 0700 "$staging_symlink"
+install -d -m 0755 "$staging_symlink/active"
+install -d -m 0755 "$staging_symlink/active/etc/systemd" "$staging_symlink/link-target"
+ln -s "$staging_symlink/link-target" "$staging_symlink/active/etc/systemd/system"
+assert_staging_fixture_failure "$staging_symlink"
+printf 'Production Identity isolated active-staging filesystem fixture passed.\n'
+
 files=(
   config/nginx/identity-runtime.conf.tftpl
   config/runtime/identity-compose.yml.tftpl
@@ -30,7 +121,7 @@ files=(
   tests/runtime/check-identity-fixtures.sh
 )
 
-for mutation in {1..86}; do
+for mutation in {1..96}; do
   root="$temporary/$mutation"
   install -d -m 0700 "$root"
   for file in "${files[@]}"; do
@@ -40,7 +131,7 @@ for mutation in {1..86}; do
     printf 'Production Identity pristine mutation fixture %d failed.\n' "$mutation" >&2
     exit 1
   fi
-  if ((mutation >= 23 && mutation <= 31)); then
+  if ((mutation >= 23 && mutation <= 31 || mutation >= 87 && mutation <= 96)); then
     IDENTITY_DOCUMENT_POLICY_FIXTURE="$root" \
       bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1
   elif ((mutation >= 32 && mutation <= 51)); then
@@ -88,24 +179,34 @@ for mutation in {1..86}; do
     80) sed -i 's/^[[:space:]]*TUE = /    MON = /' "$root/infra/modules/identity_production/documents.tf" ;;
     81) sed -i 's/cron(0\/30 [*] [*] [*] ? [*])/rate(30 minutes)/' "$root/infra/modules/identity_production/documents.tf" ;;
     82) sed -i '/resource "aws_ssm_association" "verify_identity"/,/^}/ {/apply_only_at_cron_interval/d;}' "$root/infra/modules/identity_production/documents.tf" ;;
-    83) sed -i '/install -d -m 0755 -o root -g root "$work_root\/active\/etc\/systemd\/system"/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
-    84)
+    83) sed -i '/^  "etc\/systemd\/system:0755"$/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    84) sed -i '/^  "usr\/local\/libexec\/platform:0755"$/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    85) sed -i '/for specification in "[$][$]{manual_active_staging_parent_specs\[@\]}"; do/a\    [[ "$relative_parent" == etc/systemd/system ]] || continue' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    86) sed -i '$a resource "aws_ssm_association" "extra_identity" {}' "$root/infra/modules/identity_production/documents.tf" ;;
+    87) sed -i '/^  "etc\/systemd\/system:0755"$/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    88) sed -i '/^  "usr\/local\/libexec\/platform:0755"$/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    89) sed -i '/for specification in "[$][$]{manual_active_staging_parent_specs\[@\]}"; do/a\    [[ "$relative_parent" == etc/systemd/system ]] || continue' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    90)
       python3 - "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" <<'PY'
 import pathlib
 import sys
 
 path = pathlib.Path(sys.argv[1])
 source = path.read_text(encoding="utf-8")
-creation = 'install -d -m 0755 -o root -g root "$work_root/active/etc/systemd/system"\n'
+creation = 'prepare_manual_active_staging_parents "$work_root/active" 0 0\n'
 first_write = 'write_b64gzip \'${systemd_unit_b64gzip}\' "$work_root/active/etc/systemd/system/identity-stack.service" 0644\n'
 if source.count(creation) != 1 or source.count(first_write) != 1:
-    raise SystemExit("Identity systemd-parent ordering mutation setup failed safely.")
+    raise SystemExit("Identity active-staging ordering mutation setup failed safely.")
 source = source.replace(creation, "", 1).replace(first_write, first_write + creation, 1)
 path.write_text(source, encoding="utf-8")
 PY
       ;;
-    85) sed -i 's/"755:0:0"/"777:0:0"/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
-    86) sed -i '$a resource "aws_ssm_association" "extra_identity" {}' "$root/infra/modules/identity_production/documents.tf" ;;
+    91) sed -i '0,/! -L "$parent" && /s///' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    92) sed -i 's/prepare_manual_active_staging_parents "$work_root\/active" 0 0/prepare_manual_active_staging_parents "$work_root\/active" 1 0/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    93) sed -i 's/prepare_manual_active_staging_parents "$work_root\/active" 0 0/prepare_manual_active_staging_parents "$work_root\/active" 0 1/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    94) sed -i '0,/"etc\/systemd\/system:0755"/s//"etc\/systemd\/system:0775"/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    95) sed -i '/prepare_manual_active_staging_parents "$work_root\/active" 0 0/a\write_b64gzip '\''${systemd_unit_b64gzip}'\'' "$work_root/active/opt/undeclared/member" 0644' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    96) sed -i '/^  "usr\/local\/libexec\/platform:0755"$/a\  "opt/unused:0755"' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
     3[2-9]|4[0-9]|5[01])
       python3 - "$root/infra/modules/identity_production/github_oidc.tf" "$mutation" <<'PY'
 import pathlib
@@ -217,7 +318,7 @@ PY
   grep -Fxq 'Production Identity executable contract check failed safely.' "$temporary/output"
   chmod 0600 "$temporary/output"
   rm -f -- "$temporary/output"
-  if ((mutation >= 23 && mutation <= 31)); then
+  if ((mutation >= 23 && mutation <= 31 || mutation >= 87 && mutation <= 96)); then
     if IDENTITY_DOCUMENT_POLICY_FIXTURE="$root" \
       bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1; then
       printf 'Production Identity policy mutation probe %d was not rejected safely.\n' "$mutation" >&2
@@ -247,4 +348,4 @@ PY
     rm -f -- "$temporary/output"
   fi
 done
-printf 'Production Identity independent mutation probes passed: 86 pristine controls and 86 rejections; 20 OIDC and 25 publisher cases also rejected by the independent policy gate.\n'
+printf 'Production Identity independent mutation probes passed: 96 pristine controls and 96 rejections; 19 document, 20 OIDC and 25 publisher cases also rejected by the independent policy gate.\n'

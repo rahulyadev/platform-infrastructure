@@ -17,12 +17,72 @@ write_b64gzip() {
   mv -Tf -- "$temporary" "$destination"
 }
 
+readonly -a manual_active_staging_parent_specs=(
+  "etc/systemd/system:0755"
+  "usr/local/libexec/platform:0755"
+)
+
+prepare_manual_active_staging_parents() {
+  local staging_root="$1" expected_uid="$2" expected_gid="$3"
+  local specification relative_parent mode parent expected_metadata
+  [[ "$staging_root" == /* && -d "$staging_root" && ! -L "$staging_root" ]]
+  for specification in "$${manual_active_staging_parent_specs[@]}"; do
+    relative_parent="$${specification%:*}"
+    mode="$${specification##*:}"
+    [[ "$relative_parent" =~ ^[a-z0-9][a-z0-9/-]*$ && "$relative_parent" != *//* && "$relative_parent" != */../* && "$relative_parent" != ../* && "$relative_parent" != */.. ]]
+    [[ "$mode" == 0755 ]]
+    parent="$staging_root/$relative_parent"
+    expected_metadata="$${mode#0}:$expected_uid:$expected_gid"
+    if [[ -e "$parent" || -L "$parent" ]]; then
+      [[ -d "$parent" && ! -L "$parent" && "$(stat -c '%a:%u:%g' "$parent")" == "$expected_metadata" ]]
+    else
+      install -d -m "$mode" -o "$expected_uid" -g "$expected_gid" "$parent"
+    fi
+    [[ -d "$parent" && ! -L "$parent" && "$(stat -c '%a:%u:%g' "$parent")" == "$expected_metadata" ]]
+  done
+}
+
 if [[ "$*" == --compressed-payload-fixture ]]; then
   fixture_root="$PLATFORM_IDENTITY_COMPRESSED_PAYLOAD_TEST_ROOT"
   [[ "$fixture_root" == /tmp/* && -d "$fixture_root" && ! -L "$fixture_root" ]]
   [[ "$fixture_root" == "$(realpath -e -- "$fixture_root")" ]]
   write_b64gzip "$PLATFORM_IDENTITY_COMPRESSED_PAYLOAD" "$fixture_root/result" 0600
   printf 'Identity compressed-payload fixture completed.\n'
+  exit 0
+fi
+
+if [[ "$*" == --active-staging-parent-fixture ]]; then
+  fixture_root="$PLATFORM_IDENTITY_STAGING_PARENT_TEST_ROOT"
+  [[ "$fixture_root" == /tmp/* && -d "$fixture_root" && ! -L "$fixture_root" ]]
+  [[ "$fixture_root" == "$(realpath -e -- "$fixture_root")" ]]
+  fixture_active="$fixture_root/active"
+  fixture_uid="$(id -u)"
+  fixture_gid="$(id -g)"
+  if [[ -e "$fixture_active" || -L "$fixture_active" ]]; then
+    [[ -d "$fixture_active" && ! -L "$fixture_active" && "$(stat -c '%a:%u:%g' "$fixture_active")" == "755:$fixture_uid:$fixture_gid" ]]
+  else
+    install -d -m 0755 "$fixture_active"
+  fi
+  active_staging_fixture_cleanup() {
+    local status="$1"
+    trap - ERR
+    rm -rf -- "$fixture_active"
+    printf 'Identity active-staging parent fixture failed safely.\n' >&2
+    exit "$status"
+  }
+  trap 'active_staging_fixture_cleanup $?' ERR
+  prepare_manual_active_staging_parents "$fixture_active" "$fixture_uid" "$fixture_gid"
+  if [[ -n "$${PLATFORM_IDENTITY_STAGING_PARENT_REMOVE_BEFORE_WRITE:-}" ]]; then
+    rmdir -- "$fixture_active/$PLATFORM_IDENTITY_STAGING_PARENT_REMOVE_BEFORE_WRITE"
+  fi
+  fixture_payload="$(printf 'value-free staging fixture\n' | gzip --no-name | base64 -w0)"
+  write_b64gzip "$fixture_payload" "$fixture_active/etc/systemd/system/identity-stack.service" 0644
+  write_b64gzip "$fixture_payload" "$fixture_active/usr/local/libexec/platform/identity-verify-release" 0755
+  write_b64gzip "$fixture_payload" "$fixture_active/usr/local/libexec/platform/identity-health-verify" 0755
+  write_b64gzip "$fixture_payload" "$fixture_active/usr/local/libexec/platform/pgbackrest-sidecar" 0755
+  write_b64gzip "$fixture_payload" "$fixture_active/etc/systemd/system/docker.service" 0644
+  trap - ERR
+  printf 'Identity active-staging parent fixture completed.\n'
   exit 0
 fi
 
@@ -418,8 +478,7 @@ validate_server_identity() {
 validate_server_identity "$staged_generation/tls/postgres-server" postgres
 validate_server_identity "$staged_generation/tls/redis-server" redis
 
-install -d -m 0755 -o root -g root "$work_root/active/etc/systemd/system"
-[[ -d "$work_root/active/etc/systemd/system" && ! -L "$work_root/active/etc/systemd/system" && "$(stat -c '%a:%u:%g' "$work_root/active/etc/systemd/system")" == "755:0:0" ]]
+prepare_manual_active_staging_parents "$work_root/active" 0 0
 write_b64gzip '${systemd_unit_b64gzip}' "$work_root/active/etc/systemd/system/identity-stack.service" 0644
 write_b64gzip '${verify_release_b64gzip}' "$work_root/active/usr/local/libexec/platform/identity-verify-release" 0755
 write_b64gzip '${health_verify_b64gzip}' "$work_root/active/usr/local/libexec/platform/identity-health-verify" 0755

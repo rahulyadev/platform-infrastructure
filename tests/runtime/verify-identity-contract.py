@@ -251,22 +251,79 @@ for lifecycle_script in (configure, deploy, rollback):
 require("rm -rf -- \"$obsolete_generation\"" not in configure)
 require(configure.index("systemd-analyze verify") < configure.index("transaction_started=true"))
 require(configure.index("validate_server_identity") < configure.index("transaction_started=true"))
-systemd_parent_install = 'install -d -m 0755 -o root -g root "$work_root/active/etc/systemd/system"'
-systemd_parent_verify = '[[ -d "$work_root/active/etc/systemd/system" && ! -L "$work_root/active/etc/systemd/system" && "$(stat -c \'%a:%u:%g\' "$work_root/active/etc/systemd/system")" == "755:0:0" ]]'
-first_systemd_write = 'write_b64gzip \'${systemd_unit_b64gzip}\' "$work_root/active/etc/systemd/system/identity-stack.service" 0644'
-second_systemd_write = 'write_b64gzip \'${docker_service_b64gzip}\' "$work_root/active/etc/systemd/system/docker.service" 0644'
-require(configure.count(systemd_parent_install) == 1)
-require(configure.count(systemd_parent_verify) == 1)
-require(configure.count(first_systemd_write) == 1)
-require(configure.count(second_systemd_write) == 1)
+manual_parent_manifest = re.search(
+    r"^readonly -a manual_active_staging_parent_specs=\(\n(?P<body>(?:  \"[^\n]+\"\n)+)\)$",
+    configure,
+    re.MULTILINE,
+)
+require(manual_parent_manifest is not None)
+declared_manual_parents = re.findall(
+    r'^  "([a-z0-9][a-z0-9/-]*):(0[0-7]{3})"$',
+    manual_parent_manifest.group("body"),
+    re.MULTILINE,
+)
+expected_manual_parents = [
+    ("etc/systemd/system", "0755"),
+    ("usr/local/libexec/platform", "0755"),
+]
+require(declared_manual_parents == expected_manual_parents)
+manual_active_writes = re.findall(
+    r'^write_b64gzip \'\$\{([a-z_]+)_b64gzip\}\' "\$work_root/active/([^\"]+)" (0[0-7]{3})$',
+    configure,
+    re.MULTILINE,
+)
+expected_manual_writes = [
+    ("systemd_unit", "etc/systemd/system/identity-stack.service", "0644"),
+    ("verify_release", "usr/local/libexec/platform/identity-verify-release", "0755"),
+    ("health_verify", "usr/local/libexec/platform/identity-health-verify", "0755"),
+    ("pgbackrest_sidecar", "usr/local/libexec/platform/pgbackrest-sidecar", "0755"),
+    ("docker_service", "etc/systemd/system/docker.service", "0644"),
+]
+require(manual_active_writes == expected_manual_writes)
+derived_manual_parents = sorted(
+    {str(pathlib.PurePosixPath(destination).parent) for _, destination, _ in manual_active_writes}
+)
+require(derived_manual_parents == sorted(parent for parent, _ in declared_manual_parents))
+parent_function_start = configure.index("prepare_manual_active_staging_parents() {")
+parent_function_end = configure.index("\n}\n", parent_function_start) + 2
+parent_function = configure[parent_function_start:parent_function_end]
+for fixed in (
+    'for specification in "$${manual_active_staging_parent_specs[@]}"; do',
+    '[[ "$relative_parent" =~ ^[a-z0-9][a-z0-9/-]*$ && "$relative_parent" != *//* && "$relative_parent" != */../* && "$relative_parent" != ../* && "$relative_parent" != */.. ]]',
+    '[[ "$mode" == 0755 ]]',
+    'expected_metadata="$${mode#0}:$expected_uid:$expected_gid"',
+    'if [[ -e "$parent" || -L "$parent" ]]; then',
+    'install -d -m "$mode" -o "$expected_uid" -g "$expected_gid" "$parent"',
+):
+    require(parent_function.count(fixed) == 1)
+parent_exact_check = '[[ -d "$parent" && ! -L "$parent" && "$(stat -c \'%a:%u:%g\' "$parent")" == "$expected_metadata" ]]'
+require(parent_function.count(parent_exact_check) == 2)
+require("continue" not in parent_function and "|| true" not in parent_function)
+fixture_parent_call = 'prepare_manual_active_staging_parents "$fixture_active" "$fixture_uid" "$fixture_gid"'
+production_parent_call = 'prepare_manual_active_staging_parents "$work_root/active" 0 0'
+require(configure.count(fixture_parent_call) == 1)
+require(configure.count(production_parent_call) == 1)
+require(not re.search(r'install -d[^\n]*"\$work_root/active/(?:etc/systemd/system|usr/local/libexec/platform)"', configure))
+production_parent_index = configure.index(production_parent_call)
+manual_write_indexes = [
+    configure.index(
+        f"write_b64gzip '${{{payload}_b64gzip}}' \"$work_root/active/{destination}\" {mode}"
+    )
+    for payload, destination, mode in expected_manual_writes
+]
 require(
-    configure.index(systemd_parent_install)
-    < configure.index(systemd_parent_verify)
-    < configure.index(first_systemd_write)
-    < configure.index(second_systemd_write)
+    manual_parent_manifest.start()
+    < parent_function_start
+    < production_parent_index
+    < min(manual_write_indexes)
+)
+require(manual_write_indexes == sorted(manual_write_indexes))
+require(
+    max(manual_write_indexes)
     < configure.index("systemd-analyze verify")
     < configure.index("transaction_started=true")
 )
+require("--active-staging-parent-fixture" in configure)
 for purpose_path in ("secrets/redis-server", "secrets/redis-client", "tls/redis-server", "tls/redis-client", "tls/postgres-server", "tls/postgres-client"):
     require(purpose_path in configure)
 
