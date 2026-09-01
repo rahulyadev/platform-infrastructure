@@ -3,6 +3,15 @@ locals {
   identity_bff_repository_url = aws_ecr_repository.identity["${var.name_prefix}-identity-bff"].repository_url
   identity_ecr_registry       = split("/", local.identity_api_repository_url)[0]
 
+  identity_backup_diff_association_names = {
+    MON = "${var.name_prefix}-identity-backup-diff-mon"
+    TUE = "${var.name_prefix}-identity-backup-diff-tue"
+    WED = "${var.name_prefix}-identity-backup-diff-wed"
+    THU = "${var.name_prefix}-identity-backup-diff-thu"
+    FRI = "${var.name_prefix}-identity-backup-diff-fri"
+    SAT = "${var.name_prefix}-identity-backup-diff-sat"
+  }
+
   rendered_document_scripts = {
     for key, script in var.document_scripts : key => replace(
       replace(
@@ -157,12 +166,12 @@ resource "aws_ssm_association" "configure_identity_runtime" {
 }
 
 resource "aws_ssm_association" "identity_backup_diff" {
-  count = var.enable_runtime ? 1 : 0
+  for_each = var.enable_runtime ? local.identity_backup_diff_association_names : {}
 
   name                        = aws_ssm_document.identity["backup"].name
-  association_name            = "${var.name_prefix}-identity-backup-diff"
+  association_name            = each.value
   apply_only_at_cron_interval = true
-  schedule_expression         = "cron(0 2 ? * MON-SAT *)"
+  schedule_expression         = "cron(0 2 ? * ${each.key} *)"
 
   parameters = {
     backupType = "diff"
@@ -198,7 +207,7 @@ resource "aws_ssm_association" "verify_identity" {
   name                        = aws_ssm_document.identity["verify"].name
   association_name            = "${var.name_prefix}-verify-identity"
   apply_only_at_cron_interval = true
-  schedule_expression         = "rate(30 minutes)"
+  schedule_expression         = "cron(0/30 * * * ? *)"
 
   targets {
     key    = "InstanceIds"

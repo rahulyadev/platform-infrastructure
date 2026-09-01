@@ -30,7 +30,7 @@ files=(
   tests/runtime/check-identity-fixtures.sh
 )
 
-for mutation in {1..76}; do
+for mutation in {1..86}; do
   root="$temporary/$mutation"
   install -d -m 0700 "$root"
   for file in "${files[@]}"; do
@@ -46,7 +46,7 @@ for mutation in {1..76}; do
   elif ((mutation >= 32 && mutation <= 51)); then
     IDENTITY_OIDC_POLICY_FIXTURE="$root/infra/modules/identity_production/github_oidc.tf" \
       bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1
-  elif ((mutation >= 52)); then
+  elif ((mutation >= 52 && mutation <= 76)); then
     IDENTITY_PUBLISHER_POLICY_FIXTURE="$root/infra/modules/identity_production/iam.tf" \
       bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1
   fi
@@ -82,6 +82,30 @@ for mutation in {1..76}; do
     29) sed -i 's/mv -Tf -- "$temporary" "$destination"/mv -f -- "$temporary" "$destination"/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
     30) sed -i '/condition     = length(base64encode(local[.]rendered_document_contents/d' "$root/infra/modules/identity_production/documents.tf" ;;
     31) sed -i '/install -m "$mode" \/dev\/null "$temporary"/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    77) sed -i 's/[$][{]each[.]key[}]/MON-SAT/' "$root/infra/modules/identity_production/documents.tf" ;;
+    78) sed -i 's/[$][{]each[.]key[}]/MON,TUE/' "$root/infra/modules/identity_production/documents.tf" ;;
+    79) sed -i '/^[[:space:]]*MON = /d' "$root/infra/modules/identity_production/documents.tf" ;;
+    80) sed -i 's/^[[:space:]]*TUE = /    MON = /' "$root/infra/modules/identity_production/documents.tf" ;;
+    81) sed -i 's/cron(0\/30 [*] [*] [*] ? [*])/rate(30 minutes)/' "$root/infra/modules/identity_production/documents.tf" ;;
+    82) sed -i '/resource "aws_ssm_association" "verify_identity"/,/^}/ {/apply_only_at_cron_interval/d;}' "$root/infra/modules/identity_production/documents.tf" ;;
+    83) sed -i '/install -d -m 0755 -o root -g root "$work_root\/active\/etc\/systemd\/system"/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    84)
+      python3 - "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+source = path.read_text(encoding="utf-8")
+creation = 'install -d -m 0755 -o root -g root "$work_root/active/etc/systemd/system"\n'
+first_write = 'write_b64gzip \'${systemd_unit_b64gzip}\' "$work_root/active/etc/systemd/system/identity-stack.service" 0644\n'
+if source.count(creation) != 1 or source.count(first_write) != 1:
+    raise SystemExit("Identity systemd-parent ordering mutation setup failed safely.")
+source = source.replace(creation, "", 1).replace(first_write, first_write + creation, 1)
+path.write_text(source, encoding="utf-8")
+PY
+      ;;
+    85) sed -i 's/"755:0:0"/"777:0:0"/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    86) sed -i '$a resource "aws_ssm_association" "extra_identity" {}' "$root/infra/modules/identity_production/documents.tf" ;;
     3[2-9]|4[0-9]|5[01])
       python3 - "$root/infra/modules/identity_production/github_oidc.tf" "$mutation" <<'PY'
 import pathlib
@@ -209,7 +233,7 @@ PY
     fi
     grep -Fxq 'PRODUCTION IDENTITY POLICY FAILURE: Identity OIDC trust must retain the sole ID-bearing environment subject and exact independent guards' "$temporary/output"
     rm -f -- "$temporary/output"
-  elif ((mutation >= 52)); then
+  elif ((mutation >= 52 && mutation <= 76)); then
     result=0
     if IDENTITY_PUBLISHER_POLICY_FIXTURE="$root/infra/modules/identity_production/iam.tf" \
       bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1; then
@@ -223,4 +247,4 @@ PY
     rm -f -- "$temporary/output"
   fi
 done
-printf 'Production Identity independent mutation probes passed: 76 pristine controls and 76 rejections; 20 OIDC and 25 publisher cases also rejected by the independent policy gate.\n'
+printf 'Production Identity independent mutation probes passed: 86 pristine controls and 86 rejections; 20 OIDC and 25 publisher cases also rejected by the independent policy gate.\n'

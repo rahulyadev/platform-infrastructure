@@ -53,6 +53,8 @@ Secrets are fetched only by exact ARN in the fixed configure document and captur
 Configuration holds the same exclusive lifecycle lock as deploy and rollback, stages every
 download, executable, unit, helper, generated file, secret, TLS identity, owner, and mode, and
 validates the complete candidate before an adjacent atomic rename can affect an active path. It
+creates and verifies the root-owned mode-0755 staged `etc/systemd/system` parent before either
+staged unit is written. It
 retains the prior generation and exact global objects until success, restores all of them on any
 failure, and removes raw staging material. An identical rerun is a no-op without a service stop or
 restart only when every managed parent is a real root-owned/root-group directory at its reviewed
@@ -81,8 +83,9 @@ deferred to future task `PLATFORM-P4-REDIS-RECOVERY-DESIGN-001`.
 ## Backup, recovery, and objectives
 
 pgBackRest continuously consumes the PostgreSQL WAL spool into the existing versioned/encrypted
-backup bucket under `identity/production`, with encrypted repository material, weekly full and
-six-day differential schedules, four-full/fourteen-differential retention, freshness metrics, and
+backup bucket under `identity/production`, with encrypted repository material, an unchanged Sunday
+full association and six stable single-weekday `MON` through `SAT` differential associations,
+four-full/fourteen-differential retention, freshness metrics, and
 an isolated restore rehearsal operation. Before each backup, the operation commits a non-secret
 recovery marker in an access-denied control schema and binds that marker and timestamp to bounded,
 mode-0600 backup metadata. An immediate restore must select the latest successful marker; a

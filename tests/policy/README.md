@@ -90,6 +90,16 @@ The production runtime root is subject to the same blocking provider and S3
 backend rules. Its state key must be exactly `production/runtime/tofu.tfstate`,
 and it may consume only the approved non-sensitive production-core outputs.
 
+State Manager scheduling is constrained to forms accepted by the service: six
+stable single-weekday differential-backup associations keyed `MON` through
+`SAT`, the unchanged Sunday full backup, and the exact every-30-minutes cron
+for verification. All scheduled associations remain apply-only. Ranges, lists,
+rate-plus-apply-only, immediate verification, missing or duplicate weekdays,
+and additional association resources are rejected. The configure document must
+create and verify the root-owned mode-0755 staged systemd parent before writing
+either unit; missing, late, symlinked, or metadata-weakened parents fail the
+executable contract.
+
 Every payload embedded in the Identity configure document is produced with
 OpenTofu `base64gzip`, decoded through the fixed base64/gzip pipeline into a
 private metadata-checked temporary file, and published atomically only after a

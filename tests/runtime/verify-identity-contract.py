@@ -28,6 +28,20 @@ def fail() -> "NoReturn":
     raise SystemExit(1)
 
 
+def hcl_block(source: str, marker: str) -> str:
+    try:
+        start = source.index(marker)
+        opening = source.index("{", start)
+    except ValueError:
+        fail()
+    depth = 0
+    for index in range(opening, len(source)):
+        depth += (source[index] == "{") - (source[index] == "}")
+        if depth == 0:
+            return source[start : index + 1]
+    fail()
+
+
 launcher = read("config/runtime/identity-launcher.py")
 compose = read("config/runtime/identity-compose.yml.tftpl")
 roles = read("config/runtime/postgres-roles.sql")
@@ -237,6 +251,22 @@ for lifecycle_script in (configure, deploy, rollback):
 require("rm -rf -- \"$obsolete_generation\"" not in configure)
 require(configure.index("systemd-analyze verify") < configure.index("transaction_started=true"))
 require(configure.index("validate_server_identity") < configure.index("transaction_started=true"))
+systemd_parent_install = 'install -d -m 0755 -o root -g root "$work_root/active/etc/systemd/system"'
+systemd_parent_verify = '[[ -d "$work_root/active/etc/systemd/system" && ! -L "$work_root/active/etc/systemd/system" && "$(stat -c \'%a:%u:%g\' "$work_root/active/etc/systemd/system")" == "755:0:0" ]]'
+first_systemd_write = 'write_b64gzip \'${systemd_unit_b64gzip}\' "$work_root/active/etc/systemd/system/identity-stack.service" 0644'
+second_systemd_write = 'write_b64gzip \'${docker_service_b64gzip}\' "$work_root/active/etc/systemd/system/docker.service" 0644'
+require(configure.count(systemd_parent_install) == 1)
+require(configure.count(systemd_parent_verify) == 1)
+require(configure.count(first_systemd_write) == 1)
+require(configure.count(second_systemd_write) == 1)
+require(
+    configure.index(systemd_parent_install)
+    < configure.index(systemd_parent_verify)
+    < configure.index(first_systemd_write)
+    < configure.index(second_systemd_write)
+    < configure.index("systemd-analyze verify")
+    < configure.index("transaction_started=true")
+)
 for purpose_path in ("secrets/redis-server", "secrets/redis-client", "tls/redis-server", "tls/redis-client", "tls/postgres-server", "tls/postgres-client"):
     require(purpose_path in configure)
 
@@ -367,6 +397,50 @@ for fixed in ("INSERT INTO platform_recovery.markers", "marker_created_at", "bac
 
 require('allowedPattern    = "^${replace(local.identity_api_repository_url' in documents)
 require('allowedPattern    = "^${replace(local.identity_bff_repository_url' in documents)
+expected_diff_names = {
+    "MON": "mon",
+    "TUE": "tue",
+    "WED": "wed",
+    "THU": "thu",
+    "FRI": "fri",
+    "SAT": "sat",
+}
+for weekday, suffix in expected_diff_names.items():
+    require(
+        documents.count(
+            f'{weekday} = "${{var.name_prefix}}-identity-backup-diff-{suffix}"'
+        )
+        == 1
+    )
+require(documents.count('resource "aws_ssm_association"') == 4)
+diff_association = hcl_block(
+    documents, 'resource "aws_ssm_association" "identity_backup_diff"'
+)
+require(
+    "for_each = var.enable_runtime ? local.identity_backup_diff_association_names : {}"
+    in diff_association
+)
+require("association_name            = each.value" in diff_association)
+require('schedule_expression         = "cron(0 2 ? * ${each.key} *)"' in diff_association)
+require(diff_association.count("apply_only_at_cron_interval = true") == 1)
+require('backupType = "diff"' in diff_association)
+verify_association = hcl_block(
+    documents, 'resource "aws_ssm_association" "verify_identity"'
+)
+require('schedule_expression         = "cron(0/30 * * * ? *)"' in verify_association)
+require(verify_association.count("apply_only_at_cron_interval = true") == 1)
+require("rate(30 minutes)" not in documents)
+require("MON-SAT" not in documents and "MON,TUE" not in documents)
+require(
+    re.findall(
+        r'^\s*schedule_expression\s*=\s*"([^"]+)"\s*$', documents, re.MULTILINE
+    )
+    == [
+        "cron(0 2 ? * ${each.key} *)",
+        "cron(0 2 ? * SUN *)",
+        "cron(0/30 * * * ? *)",
+    ]
+)
 require('["deploy", "verify", "rollback"]' in iam)
 for excluded in ('aws_ssm_document.identity["configure"].arn', 'aws_ssm_document.identity["tls"].arn', 'aws_ssm_document.identity["backup"].arn', 'aws_ssm_document.identity["restore"].arn'):
     require(excluded not in iam)
