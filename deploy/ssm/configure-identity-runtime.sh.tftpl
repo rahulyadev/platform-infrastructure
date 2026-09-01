@@ -418,6 +418,8 @@ validate_server_identity() {
 validate_server_identity "$staged_generation/tls/postgres-server" postgres
 validate_server_identity "$staged_generation/tls/redis-server" redis
 
+install -d -m 0755 -o root -g root "$work_root/active/etc/systemd/system"
+[[ -d "$work_root/active/etc/systemd/system" && ! -L "$work_root/active/etc/systemd/system" && "$(stat -c '%a:%u:%g' "$work_root/active/etc/systemd/system")" == "755:0:0" ]]
 write_b64gzip '${systemd_unit_b64gzip}' "$work_root/active/etc/systemd/system/identity-stack.service" 0644
 write_b64gzip '${verify_release_b64gzip}' "$work_root/active/usr/local/libexec/platform/identity-verify-release" 0755
 write_b64gzip '${health_verify_b64gzip}' "$work_root/active/usr/local/libexec/platform/identity-health-verify" 0755

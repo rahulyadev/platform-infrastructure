@@ -655,8 +655,32 @@ require_fixed "$runtime_fixture" 'identity_service_owner:identity_service_migrat
   "fresh PostgreSQL proof must end at the sole exact membership row and options"
 require_fixed deploy/ssm/enable-identity-tls.sh 'identity.rahuly.in' \
   "the fixed Identity TLS operation must target only the exact API hostname"
-require_fixed "$production_module/documents.tf" 'schedule_expression         = "rate(30 minutes)"' \
-  "Identity verification must run on the exact supported thirty-minute schedule"
+require_count 6 '^[[:space:]]*(MON|TUE|WED|THU|FRI|SAT)[[:space:]]*=[[:space:]]*"[$][{]var[.]name_prefix[}]-identity-backup-diff-(mon|tue|wed|thu|fri|sat)"[[:space:]]*$' "$production_module/documents.tf" \
+  "Identity differential backups must have six fixed single-weekday association names"
+for fixed_weekday in \
+  'MON = "${var.name_prefix}-identity-backup-diff-mon"' \
+  'TUE = "${var.name_prefix}-identity-backup-diff-tue"' \
+  'WED = "${var.name_prefix}-identity-backup-diff-wed"' \
+  'THU = "${var.name_prefix}-identity-backup-diff-thu"' \
+  'FRI = "${var.name_prefix}-identity-backup-diff-fri"' \
+  'SAT = "${var.name_prefix}-identity-backup-diff-sat"'; do
+  require_fixed "$production_module/documents.tf" "$fixed_weekday" \
+    "Identity differential weekday/name pairs must remain exact"
+done
+require_count 1 '^[[:space:]]*for_each[[:space:]]*=[[:space:]]*var[.]enable_runtime[[:space:]]*[?][[:space:]]*local[.]identity_backup_diff_association_names[[:space:]]*:[[:space:]]*[{][}][[:space:]]*$' "$production_module/documents.tf" \
+  "Identity differential associations must use the fixed six-key map"
+require_count 1 '^[[:space:]]*schedule_expression[[:space:]]*=[[:space:]]*"cron[(]0 2 [?] [*] [$][{]each[.]key[}] [*][)]"[[:space:]]*$' "$production_module/documents.tf" \
+  "Identity differential backups must use one single-weekday cron per keyed instance"
+require_count 1 '^[[:space:]]*schedule_expression[[:space:]]*=[[:space:]]*"cron[(]0/30 [*] [*] [*] [?] [*][)]"[[:space:]]*$' "$production_module/documents.tf" \
+  "Identity verification must use the supported thirty-minute association cron"
+require_count 3 '^[[:space:]]*apply_only_at_cron_interval[[:space:]]*=[[:space:]]*true[[:space:]]*$' "$production_module/documents.tf" \
+  "all scheduled Identity associations must remain apply-only"
+reject 'MON-SAT|MON,TUE|rate[(]30 minutes[)]' "$production_module/documents.tf" \
+  "Identity associations must reject weekday ranges/lists and rate-plus-apply-only schedules"
+require_fixed "$configure" 'install -d -m 0755 -o root -g root "$work_root/active/etc/systemd/system"' \
+  "Identity configuration must create the staged systemd parent before unit writes"
+require_fixed "$configure" '"$(stat -c '\''%a:%u:%g'\'' "$work_root/active/etc/systemd/system")" == "755:0:0"' \
+  "the staged systemd parent must have exact type and metadata proof"
 require_fixed deploy/ssm/verify-identity.sh 'Dimensions=[{Name=InstanceId' \
   "Identity verification metrics must match the alarm InstanceId dimension"
 require_count 1 '^[[:space:]]*resource "aws_cloudwatch_metric_alarm" "identity"' "$production_module/monitoring.tf" \
