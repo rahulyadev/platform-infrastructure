@@ -52,9 +52,13 @@ Secret values are never committed. The four host-readable secret schemas are nam
 Secrets are fetched only by exact ARN in the fixed configure document and captured without tracing.
 Configuration holds the same exclusive lifecycle lock as deploy and rollback, stages every
 download, executable, unit, helper, generated file, secret, TLS identity, owner, and mode, and
-validates the complete candidate before an adjacent atomic rename can affect an active path. It
-creates and verifies the root-owned mode-0755 staged `etc/systemd/system` parent before either
-staged unit is written. It
+validates the complete candidate before an adjacent atomic rename can affect an active path. Its
+five manual active-staging writes comprise two systemd units and three libexec helpers. Before the
+first write, one manifest-driven path derives, creates, and verifies the complete and only parent
+set: staged `etc/systemd/system` and `usr/local/libexec/platform`, each a real non-symlink directory
+with exact root ownership, root group and mode 0755. Independent policy/executable derivation and
+an isolated first-run, negative-failure, cleanup and exact-rerun fixture reject a missing, late,
+undeclared, unused, symlink-accepted or metadata-weakened parent. Configuration
 retains the prior generation and exact global objects until success, restores all of them on any
 failure, and removes raw staging material. An identical rerun is a no-op without a service stop or
 restart only when every managed parent is a real root-owned/root-group directory at its reviewed

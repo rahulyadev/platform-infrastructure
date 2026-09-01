@@ -203,6 +203,76 @@ PY
   fi
 }
 
+check_manual_active_staging_parents() {
+  if ! python3 - "$1" <<'PY'
+import pathlib
+import re
+import sys
+
+try:
+    source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+    manifest = re.search(
+        r'^readonly -a manual_active_staging_parent_specs=\(\n(?P<body>(?:  "[^\n]+"\n)+)\)$',
+        source,
+        re.MULTILINE,
+    )
+    declared = [] if manifest is None else re.findall(
+        r'^  "([a-z0-9][a-z0-9/-]*):(0[0-7]{3})"$',
+        manifest.group("body"),
+        re.MULTILINE,
+    )
+    writes = re.findall(
+        r'^write_b64gzip \'\$\{([a-z_]+)_b64gzip\}\' "\$work_root/active/([^\"]+)" (0[0-7]{3})$',
+        source,
+        re.MULTILINE,
+    )
+    expected_declared = [
+        ("etc/systemd/system", "0755"),
+        ("usr/local/libexec/platform", "0755"),
+    ]
+    expected_writes = [
+        ("systemd_unit", "etc/systemd/system/identity-stack.service", "0644"),
+        ("verify_release", "usr/local/libexec/platform/identity-verify-release", "0755"),
+        ("health_verify", "usr/local/libexec/platform/identity-health-verify", "0755"),
+        ("pgbackrest_sidecar", "usr/local/libexec/platform/pgbackrest-sidecar", "0755"),
+        ("docker_service", "etc/systemd/system/docker.service", "0644"),
+    ]
+    derived = sorted({str(pathlib.PurePosixPath(path).parent) for _, path, _ in writes})
+    function_start = source.index("prepare_manual_active_staging_parents() {")
+    function_end = source.index("\n}\n", function_start) + 2
+    function = source[function_start:function_end]
+    production_call = 'prepare_manual_active_staging_parents "$work_root/active" 0 0'
+    call_index = source.index(production_call)
+    write_indexes = [
+        source.index(f"write_b64gzip '${{{payload}_b64gzip}}' \"$work_root/active/{path}\" {mode}")
+        for payload, path, mode in expected_writes
+    ]
+    exact_check = '[[ -d "$parent" && ! -L "$parent" && "$(stat -c \'%a:%u:%g\' "$parent")" == "$expected_metadata" ]]'
+    valid = (
+        manifest is not None
+        and declared == expected_declared
+        and writes == expected_writes
+        and derived == sorted(path for path, _ in declared)
+        and function.count('for specification in "$${manual_active_staging_parent_specs[@]}"; do') == 1
+        and function.count('install -d -m "$mode" -o "$expected_uid" -g "$expected_gid" "$parent"') == 1
+        and function.count(exact_check) == 2
+        and function.count('[[ "$mode" == 0755 ]]') == 1
+        and 'continue' not in function
+        and '|| true' not in function
+        and source.count(production_call) == 1
+        and not re.search(r'install -d[^\n]*"\$work_root/active/(?:etc/systemd/system|usr/local/libexec/platform)"', source)
+        and manifest.start() < function_start < call_index < min(write_indexes)
+        and write_indexes == sorted(write_indexes)
+    )
+except (OSError, UnicodeError, ValueError):
+    valid = False
+raise SystemExit(0 if valid else 1)
+PY
+  then
+    fail "Identity manual active-staging writes must retain the exact manifest-derived parent contract"
+  fi
+}
+
 if [[ -n "${IDENTITY_PUBLISHER_POLICY_FIXTURE:-}" ]]; then
   fixture_file="$IDENTITY_PUBLISHER_POLICY_FIXTURE"
   if [[ "$fixture_file" != /tmp/* || ! -f "$fixture_file" || -L "$fixture_file" \
@@ -253,6 +323,7 @@ check_identity_document_bounds() {
     "configure must atomically publish every decoded payload"
   reject '^[[:space:]]*write_b64[(]|base64 --decode[[:space:]]*>' "$configure_file" \
     "configure must not restore its raw-base64 writer"
+  check_manual_active_staging_parents "$configure_file"
   require_count 1 '^[[:space:]]*condition[[:space:]]*=[[:space:]]*length[(]base64encode[(]local[.]rendered_document_contents\[each[.]key\][)][)][[:space:]]*<=[[:space:]]*81920[[:space:]]*$' "$documents_file" \
     "every rendered SSM document must retain the exact 61,440-byte base64-length guard"
   require_count 1 '^[[:space:]]*error_message[[:space:]]*=[[:space:]]*"The rendered UTF-8 SSM document must not exceed 61,440 bytes[.]"[[:space:]]*$' "$documents_file" \
@@ -677,10 +748,6 @@ require_count 3 '^[[:space:]]*apply_only_at_cron_interval[[:space:]]*=[[:space:]
   "all scheduled Identity associations must remain apply-only"
 reject 'MON-SAT|MON,TUE|rate[(]30 minutes[)]' "$production_module/documents.tf" \
   "Identity associations must reject weekday ranges/lists and rate-plus-apply-only schedules"
-require_fixed "$configure" 'install -d -m 0755 -o root -g root "$work_root/active/etc/systemd/system"' \
-  "Identity configuration must create the staged systemd parent before unit writes"
-require_fixed "$configure" '"$(stat -c '\''%a:%u:%g'\'' "$work_root/active/etc/systemd/system")" == "755:0:0"' \
-  "the staged systemd parent must have exact type and metadata proof"
 require_fixed deploy/ssm/verify-identity.sh 'Dimensions=[{Name=InstanceId' \
   "Identity verification metrics must match the alarm InstanceId dimension"
 require_count 1 '^[[:space:]]*resource "aws_cloudwatch_metric_alarm" "identity"' "$production_module/monitoring.tf" \
