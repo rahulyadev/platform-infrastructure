@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 import sys
@@ -249,7 +250,11 @@ require(configure.count("fetch_secret \"") == 4)
 for lifecycle_script in (configure, deploy, rollback):
     require("platform-identity-lifecycle.lock" in lifecycle_script)
 require("rm -rf -- \"$obsolete_generation\"" not in configure)
-require(configure.index("systemd-analyze verify") < configure.index("transaction_started=true"))
+systemd_verifier_index = configure.find("systemd-analyze --recursive-errors=yes verify")
+require(
+    systemd_verifier_index >= 0
+    and systemd_verifier_index < configure.index("transaction_started=true")
+)
 require(configure.index("validate_server_identity") < configure.index("transaction_started=true"))
 manual_parent_manifest = re.search(
     r"^readonly -a manual_active_staging_parent_specs=\(\n(?P<body>(?:  \"[^\n]+\"\n)+)\)$",
@@ -320,10 +325,100 @@ require(
 require(manual_write_indexes == sorted(manual_write_indexes))
 require(
     max(manual_write_indexes)
-    < configure.index("systemd-analyze verify")
+    < configure.index('verify_staged_units \\\n  "$work_root/active"')
     < configure.index("transaction_started=true")
 )
 require("--active-staging-parent-fixture" in configure)
+
+unit_verifier_start = configure.index("verify_staged_units() (")
+unit_verifier_end = configure.index(
+    '\n)\n\nif [[ "$*" == --unit-verification-fixture ]]', unit_verifier_start
+) + 2
+unit_verifier = configure[unit_verifier_start:unit_verifier_end]
+mapping_match = re.search(
+    r"^mapping = (?P<value>\(\n(?:    \([^\n]+\),\n)+\))$",
+    unit_verifier,
+    re.MULTILINE,
+)
+require(mapping_match is not None)
+try:
+    unit_mapping = ast.literal_eval(mapping_match.group("value"))
+except (SyntaxError, ValueError):
+    fail()
+expected_unit_mapping = (
+    ("docker.service", "ExecStart", "/usr/local/bin/dockerd"),
+    (
+        "identity-stack.service",
+        "ExecStartPre",
+        "/usr/local/libexec/platform/identity-verify-release",
+    ),
+    (
+        "identity-stack.service",
+        "ExecStart",
+        "/usr/local/lib/docker/cli-plugins/docker-compose",
+    ),
+    (
+        "identity-stack.service",
+        "ExecStop",
+        "/usr/local/lib/docker/cli-plugins/docker-compose",
+    ),
+)
+require(unit_mapping == expected_unit_mapping)
+for fixed in (
+    'trap \'rm -rf -- "$verification_root"\' EXIT',
+    '    >"$verification_root/transform.stdout" \\',
+    '    2>"$verification_root/transform.stderr" <<\'PY\'',
+    '"docker.service": gzip.decompress(base64.b64decode(sys.argv[5], validate=True))',
+    '"identity-stack.service": gzip.decompress(base64.b64decode(sys.argv[6], validate=True))',
+    "if staged_bytes != canonical_units[unit_name]:",
+    'if all_original.count(token.encode("ascii")) != count:',
+    "if len(matches) != 1 or transformed.count(prefix) != 1:",
+    "if replacement_count != 4:",
+    "if reversed_bytes.count(replacement) != 1:",
+    "if reversed_bytes != originals[unit_name]:",
+    "or path.is_symlink()",
+    "exact_ancestor_chain(executable)",
+    "exact_regular(executable, 0o755)",
+    "if not os.access(executable, os.X_OK):",
+    "systemd-analyze --recursive-errors=yes verify \\",
+    '    "$copies_root/docker.service" \\',
+    '    "$copies_root/identity-stack.service" \\',
+    '    >"$verification_root/systemd.stdout" \\',
+    '    2>"$verification_root/systemd.stderr"',
+):
+    require(unit_verifier.count(fixed) == 1)
+for forbidden in (
+    "--root=",
+    "|| true",
+    ">/dev/null",
+    "2>/dev/null",
+    "grep ",
+    "bind",
+):
+    require(forbidden not in unit_verifier)
+expected_token_count_block = '''expected_token_counts = {
+    "/usr/local/bin/dockerd": 1,
+    "/usr/local/libexec/platform/identity-verify-release": 1,
+    "/usr/local/lib/docker/cli-plugins/docker-compose": 2,
+}'''
+require(unit_verifier.count(expected_token_count_block) == 1)
+require(configure.count("systemd-analyze --recursive-errors=yes verify") == 1)
+require("systemd-analyze verify" not in configure)
+production_verifier_call = '''verify_staged_units \\
+  "$work_root/active" \\
+  "$unit_verification_root" \\
+  0 \\
+  0 \\
+  '${docker_service_b64gzip}' \\
+  '${systemd_unit_b64gzip}'
+[[ ! -e "$unit_verification_root" && ! -L "$unit_verification_root" ]]'''
+require(configure.count(production_verifier_call) == 1)
+require(
+    max(manual_write_indexes)
+    < configure.index(production_verifier_call)
+    < configure.index("transaction_started=true")
+)
+require(configure.count("--unit-verification-fixture") == 1)
 for purpose_path in ("secrets/redis-server", "secrets/redis-client", "tls/redis-server", "tls/redis-client", "tls/postgres-server", "tls/postgres-client"):
     require(purpose_path in configure)
 

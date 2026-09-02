@@ -273,6 +273,88 @@ PY
   fi
 }
 
+check_staged_unit_verification() {
+  if ! python3 - "$1" <<'PY'
+import ast
+import pathlib
+import re
+import sys
+
+try:
+    source = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+    start = source.index("verify_staged_units() (")
+    end = source.index(
+        '\n)\n\nif [[ "$*" == --unit-verification-fixture ]]', start
+    ) + 2
+    verifier = source[start:end]
+    match = re.search(
+        r"^mapping = (?P<value>\(\n(?:    \([^\n]+\),\n)+\))$",
+        verifier,
+        re.MULTILINE,
+    )
+    mapping = None if match is None else ast.literal_eval(match.group("value"))
+    expected = (
+        ("docker.service", "ExecStart", "/usr/local/bin/dockerd"),
+        ("identity-stack.service", "ExecStartPre", "/usr/local/libexec/platform/identity-verify-release"),
+        ("identity-stack.service", "ExecStart", "/usr/local/lib/docker/cli-plugins/docker-compose"),
+        ("identity-stack.service", "ExecStop", "/usr/local/lib/docker/cli-plugins/docker-compose"),
+    )
+    required = (
+        'trap \'rm -rf -- "$verification_root"\' EXIT',
+        '    >"$verification_root/transform.stdout" \\',
+        '    2>"$verification_root/transform.stderr" <<\'PY\'',
+        '"docker.service": gzip.decompress(base64.b64decode(sys.argv[5], validate=True))',
+        '"identity-stack.service": gzip.decompress(base64.b64decode(sys.argv[6], validate=True))',
+        "if staged_bytes != canonical_units[unit_name]:",
+        'if all_original.count(token.encode("ascii")) != count:',
+        "if len(matches) != 1 or transformed.count(prefix) != 1:",
+        "if replacement_count != 4:",
+        "if reversed_bytes.count(replacement) != 1:",
+        "if reversed_bytes != originals[unit_name]:",
+        "or path.is_symlink()",
+        "exact_ancestor_chain(executable)",
+        "exact_regular(executable, 0o755)",
+        "if not os.access(executable, os.X_OK):",
+        "systemd-analyze --recursive-errors=yes verify \\",
+        '    "$copies_root/docker.service" \\',
+        '    "$copies_root/identity-stack.service" \\',
+        '    >"$verification_root/systemd.stdout" \\',
+        '    2>"$verification_root/systemd.stderr"',
+    )
+    token_counts = '''expected_token_counts = {
+    "/usr/local/bin/dockerd": 1,
+    "/usr/local/libexec/platform/identity-verify-release": 1,
+    "/usr/local/lib/docker/cli-plugins/docker-compose": 2,
+}'''
+    production_call = '''verify_staged_units \\
+  "$work_root/active" \\
+  "$unit_verification_root" \\
+  0 \\
+  0 \\
+  '${docker_service_b64gzip}' \\
+  '${systemd_unit_b64gzip}'
+[[ ! -e "$unit_verification_root" && ! -L "$unit_verification_root" ]]'''
+    forbidden = ("--root=", "|| true", ">/dev/null", "2>/dev/null", "grep ", "bind")
+    valid = (
+        mapping == expected
+        and all(verifier.count(item) == 1 for item in required)
+        and verifier.count(token_counts) == 1
+        and all(item not in verifier for item in forbidden)
+        and source.count("systemd-analyze --recursive-errors=yes verify") == 1
+        and "systemd-analyze verify" not in source
+        and source.count(production_call) == 1
+        and source.count("--unit-verification-fixture") == 1
+        and source.index(production_call) < source.index("transaction_started=true")
+    )
+except (OSError, UnicodeError, ValueError, SyntaxError):
+    valid = False
+raise SystemExit(0 if valid else 1)
+PY
+  then
+    fail "Identity staged-unit verification must retain the exact copy-only mapping, byte proof, executable checks, real systemd invocation, propagation, and cleanup"
+  fi
+}
+
 if [[ -n "${IDENTITY_PUBLISHER_POLICY_FIXTURE:-}" ]]; then
   fixture_file="$IDENTITY_PUBLISHER_POLICY_FIXTURE"
   if [[ "$fixture_file" != /tmp/* || ! -f "$fixture_file" || -L "$fixture_file" \
@@ -324,6 +406,7 @@ check_identity_document_bounds() {
   reject '^[[:space:]]*write_b64[(]|base64 --decode[[:space:]]*>' "$configure_file" \
     "configure must not restore its raw-base64 writer"
   check_manual_active_staging_parents "$configure_file"
+  check_staged_unit_verification "$configure_file"
   require_count 1 '^[[:space:]]*condition[[:space:]]*=[[:space:]]*length[(]base64encode[(]local[.]rendered_document_contents\[each[.]key\][)][)][[:space:]]*<=[[:space:]]*81920[[:space:]]*$' "$documents_file" \
     "every rendered SSM document must retain the exact 61,440-byte base64-length guard"
   require_count 1 '^[[:space:]]*error_message[[:space:]]*=[[:space:]]*"The rendered UTF-8 SSM document must not exceed 61,440 bytes[.]"[[:space:]]*$' "$documents_file" \

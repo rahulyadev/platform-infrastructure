@@ -58,8 +58,19 @@ first write, one manifest-driven path derives, creates, and verifies the complet
 set: staged `etc/systemd/system` and `usr/local/libexec/platform`, each a real non-symlink directory
 with exact root ownership, root group and mode 0755. Independent policy/executable derivation and
 an isolated first-run, negative-failure, cleanup and exact-rerun fixture reject a missing, late,
-undeclared, unused, symlink-accepted or metadata-weakened parent. Configuration
-retains the prior generation and exact global objects until success, restores all of them on any
+undeclared, unused, symlink-accepted or metadata-weakened parent. It then verifies the canonical
+units without changing their staged or installed bytes. Configuration creates a
+private verification directory below the configure work root, decodes the two canonical unit
+payloads for byte equality, and writes verification-only copies. A fixed unit/directive mapping
+rewrites only Docker `ExecStart` plus Identity `ExecStartPre`, `ExecStart`, and `ExecStop` command
+tokens to their existing absolute staged executable paths. Exact four-replacement cardinality and
+a reverse byte proof preserve every argument, dependency, directive, and other byte. Each staged
+executable must remain a real non-symlink executable with exact metadata before unfiltered
+`systemd-analyze --recursive-errors=yes verify` runs on the copies. Base-OS commands and dependency
+units therefore resolve from the real host; no partial alternate root, live placeholder, bind
+mount, or installed-unit rewrite is involved. The private copies and diagnostics are removed for
+both success and failure. Configuration retains the prior generation and exact global objects
+until success, restores all of them on any
 failure, and removes raw staging material. An identical rerun is a no-op without a service stop or
 restart only when every managed parent is a real root-owned/root-group directory at its reviewed
 mode and every active binary, helper, unit, and enablement link or file has its exact type,

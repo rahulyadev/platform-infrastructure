@@ -99,6 +99,115 @@ ln -s "$staging_symlink/link-target" "$staging_symlink/active/etc/systemd/system
 assert_staging_fixture_failure "$staging_symlink"
 printf 'Production Identity isolated active-staging filesystem fixture passed.\n'
 
+prepare_unit_verification_fixture() {
+  local fixture_root="$1"
+  install -d -m 0700 \
+    "$fixture_root/active/etc/systemd/system" \
+    "$fixture_root/active/usr/local/bin" \
+    "$fixture_root/active/usr/local/lib/docker/cli-plugins" \
+    "$fixture_root/active/usr/local/libexec/platform" \
+    "$fixture_root/canonical" \
+    "$fixture_root/verification"
+  install -m 0644 "$repository_root/config/runtime/docker.service" \
+    "$fixture_root/active/etc/systemd/system/docker.service"
+  install -m 0644 "$repository_root/config/runtime/docker.service" \
+    "$fixture_root/canonical/docker.service"
+  install -m 0644 "$repository_root/config/runtime/identity-stack.service" \
+    "$fixture_root/active/etc/systemd/system/identity-stack.service"
+  install -m 0644 "$repository_root/config/runtime/identity-stack.service" \
+    "$fixture_root/canonical/identity-stack.service"
+  for executable in \
+    active/usr/local/bin/dockerd \
+    active/usr/local/lib/docker/cli-plugins/docker-compose \
+    active/usr/local/libexec/platform/identity-verify-release; do
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$fixture_root/$executable"
+    chmod 0755 "$fixture_root/$executable"
+  done
+}
+
+run_unit_verification_fixture() {
+  local fixture_root="$1" docker_payload identity_payload
+  docker_payload="$(gzip --no-name --stdout "$fixture_root/canonical/docker.service" | base64 -w0)"
+  identity_payload="$(gzip --no-name --stdout "$fixture_root/canonical/identity-stack.service" | base64 -w0)"
+  PLATFORM_IDENTITY_UNIT_VERIFICATION_TEST_ROOT="$fixture_root" \
+  PLATFORM_IDENTITY_DOCKER_UNIT_B64GZIP="$docker_payload" \
+  PLATFORM_IDENTITY_STACK_UNIT_B64GZIP="$identity_payload" \
+    bash "$rendered_configure" --unit-verification-fixture
+}
+
+assert_unit_verification_failure() {
+  local fixture_root="$1"
+  if run_unit_verification_fixture "$fixture_root" >"$temporary/output" 2>&1; then
+    printf 'Production Identity staged-unit negative fixture was not rejected safely.\n' >&2
+    exit 1
+  fi
+  [[ ! -e "$fixture_root/verification" && ! -L "$fixture_root/verification" ]]
+  [[ ! -s "$temporary/output" ]]
+  rm -f -- "$temporary/output"
+}
+
+unit_success="$temporary/unit-success"
+prepare_unit_verification_fixture "$unit_success"
+run_unit_verification_fixture "$unit_success" >"$temporary/output"
+grep -Fxq 'Identity staged-unit verification fixture completed.' "$temporary/output"
+[[ ! -e "$unit_success/verification" && ! -L "$unit_success/verification" ]]
+rm -f -- "$temporary/output"
+
+managed_executables=(
+  usr/local/bin/dockerd
+  usr/local/libexec/platform/identity-verify-release
+  usr/local/lib/docker/cli-plugins/docker-compose
+  usr/local/lib/docker/cli-plugins/docker-compose
+)
+for index in "${!managed_executables[@]}"; do
+  for defect in missing non-executable symlink; do
+    unit_negative="$temporary/unit-${index}-${defect}"
+    prepare_unit_verification_fixture "$unit_negative"
+    executable="$unit_negative/active/${managed_executables[$index]}"
+    case "$defect" in
+      missing) rm -f -- "$executable" ;;
+      non-executable) chmod 0644 "$executable" ;;
+      symlink)
+        rm -f -- "$executable"
+        ln -s /bin/true "$executable"
+        ;;
+    esac
+    assert_unit_verification_failure "$unit_negative"
+  done
+done
+
+unit_live_only="$temporary/unit-live-only"
+prepare_unit_verification_fixture "$unit_live_only"
+sed -i 's#ExecStartPre=/usr/local/libexec/platform/identity-verify-release#ExecStartPre=/bin/true#' \
+  "$unit_live_only/active/etc/systemd/system/identity-stack.service" \
+  "$unit_live_only/canonical/identity-stack.service"
+assert_unit_verification_failure "$unit_live_only"
+
+unit_wrong_directive="$temporary/unit-wrong-directive"
+prepare_unit_verification_fixture "$unit_wrong_directive"
+sed -i 's#ExecStartPre=/usr/local/libexec/platform/identity-verify-release#ExecCondition=/usr/local/libexec/platform/identity-verify-release#' \
+  "$unit_wrong_directive/active/etc/systemd/system/identity-stack.service" \
+  "$unit_wrong_directive/canonical/identity-stack.service"
+assert_unit_verification_failure "$unit_wrong_directive"
+
+unit_extra="$temporary/unit-extra-replacement"
+prepare_unit_verification_fixture "$unit_extra"
+printf 'ExecStart=/usr/local/bin/dockerd --duplicate\n' >>"$unit_extra/active/etc/systemd/system/docker.service"
+printf 'ExecStart=/usr/local/bin/dockerd --duplicate\n' >>"$unit_extra/canonical/docker.service"
+assert_unit_verification_failure "$unit_extra"
+
+unit_changed_argument="$temporary/unit-changed-argument"
+prepare_unit_verification_fixture "$unit_changed_argument"
+sed -i 's/--remove-orphans/--remove-orphans --changed/' \
+  "$unit_changed_argument/active/etc/systemd/system/identity-stack.service"
+assert_unit_verification_failure "$unit_changed_argument"
+
+unit_altered_canonical="$temporary/unit-altered-canonical"
+prepare_unit_verification_fixture "$unit_altered_canonical"
+printf '# altered canonical unit\n' >>"$unit_altered_canonical/canonical/docker.service"
+assert_unit_verification_failure "$unit_altered_canonical"
+printf 'Production Identity real systemd staged-unit fixture passed with paired cleanup and negative proofs.\n'
+
 files=(
   config/nginx/identity-runtime.conf.tftpl
   config/runtime/identity-compose.yml.tftpl
@@ -121,7 +230,7 @@ files=(
   tests/runtime/check-identity-fixtures.sh
 )
 
-for mutation in {1..96}; do
+for mutation in {1..108}; do
   root="$temporary/$mutation"
   install -d -m 0700 "$root"
   for file in "${files[@]}"; do
@@ -131,7 +240,7 @@ for mutation in {1..96}; do
     printf 'Production Identity pristine mutation fixture %d failed.\n' "$mutation" >&2
     exit 1
   fi
-  if ((mutation >= 23 && mutation <= 31 || mutation >= 87 && mutation <= 96)); then
+  if ((mutation >= 23 && mutation <= 31 || mutation >= 87 && mutation <= 108)); then
     IDENTITY_DOCUMENT_POLICY_FIXTURE="$root" \
       bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1
   elif ((mutation >= 32 && mutation <= 51)); then
@@ -207,6 +316,18 @@ PY
     94) sed -i '0,/"etc\/systemd\/system:0755"/s//"etc\/systemd\/system:0775"/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
     95) sed -i '/prepare_manual_active_staging_parents "$work_root\/active" 0 0/a\write_b64gzip '\''${systemd_unit_b64gzip}'\'' "$work_root/active/opt/undeclared/member" 0644' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
     96) sed -i '/^  "usr\/local\/libexec\/platform:0755"$/a\  "opt/unused:0755"' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    97) sed -i 's/--recursive-errors=yes/--recursive-errors=no/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    98) sed -i 's#2>"$verification_root/systemd.stderr"#2>"$verification_root/systemd.stderr" || true#' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    99) sed -i 's#("docker.service", "ExecStart", "/#("docker.service", "ExecStartPre", "/#' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    100) sed -i 's#/usr/local/bin/dockerd#/usr/local/bin/docker#' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    101) sed -i '/("docker.service", "ExecStart",/a\    ("docker.service", "ExecStart", "/usr/local/bin/dockerd"),' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    102) sed -i '/if staged_bytes != canonical_units\[unit_name\]/,+1d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    103) sed -i '/if reversed_bytes != originals\[unit_name\]/,+1d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    104) sed -i 's/if replacement_count != 4:/if replacement_count != 3:/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    105) sed -i '/or path.is_symlink()/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    106) sed -i 's/exact_regular(executable, 0o755)/exact_regular(executable, 0o644)/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    107) sed -i '/systemd-analyze --recursive-errors=yes verify/,/2>"$verification_root\/systemd.stderr"/d' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
+    108) sed -i 's/or transformed.count(prefix) != 1/or transformed.count(prefix) < 1/' "$root/deploy/ssm/configure-identity-runtime.sh.tftpl" ;;
     3[2-9]|4[0-9]|5[01])
       python3 - "$root/infra/modules/identity_production/github_oidc.tf" "$mutation" <<'PY'
 import pathlib
@@ -318,7 +439,7 @@ PY
   grep -Fxq 'Production Identity executable contract check failed safely.' "$temporary/output"
   chmod 0600 "$temporary/output"
   rm -f -- "$temporary/output"
-  if ((mutation >= 23 && mutation <= 31 || mutation >= 87 && mutation <= 96)); then
+  if ((mutation >= 23 && mutation <= 31 || mutation >= 87 && mutation <= 108)); then
     if IDENTITY_DOCUMENT_POLICY_FIXTURE="$root" \
       bash "$repository_root/tests/policy/check-production-identity.sh" >"$temporary/output" 2>&1; then
       printf 'Production Identity policy mutation probe %d was not rejected safely.\n' "$mutation" >&2
@@ -348,4 +469,4 @@ PY
     rm -f -- "$temporary/output"
   fi
 done
-printf 'Production Identity independent mutation probes passed: 96 pristine controls and 96 rejections; 19 document, 20 OIDC and 25 publisher cases also rejected by the independent policy gate.\n'
+printf 'Production Identity independent mutation probes passed: 108 pristine controls and 108 rejections; 31 document, 20 OIDC and 25 publisher cases also rejected by the independent policy gate.\n'
