@@ -107,6 +107,18 @@ proves first-run creation, five write successes, exact rerun outcome, rejection
 after either parent is removed, wrong-mode and symlink rejection, and cleanup
 after every injected failure.
 
+Before the global transaction, the exact staged Docker and Identity units must remain byte-equal
+to their decoded canonical payloads. Verification uses task-private copies only. A fixed mapping
+rewrites exactly four command executable tokens—Docker `ExecStart`, then Identity `ExecStartPre`,
+`ExecStart`, and `ExecStop`—to absolute paths under the active staging root. Both independent
+source gates enforce mapping order and cardinality, original-byte equality, reverse-transformation
+equality, exact executable type/mode/ownership checks, cleanup, and the sole unfiltered
+`systemd-analyze --recursive-errors=yes verify` invocation. The real-systemd fixture passes with
+managed executables present only in staging and rejects every missing, non-executable, symlinked,
+live-only/decoy, wrong-directive, duplicate-replacement, changed-argument, altered-canonical,
+weakened-recursion, or suppressed-status case. A partial alternate root, live-root placeholder,
+bind mount, installed-unit rewrite, filtered diagnostics, or ignored verifier status is forbidden.
+
 Every payload embedded in the Identity configure document is produced with
 OpenTofu `base64gzip`, decoded through the fixed base64/gzip pipeline into a
 private metadata-checked temporary file, and published atomically only after a

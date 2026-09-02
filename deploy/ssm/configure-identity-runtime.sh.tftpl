@@ -42,6 +42,156 @@ prepare_manual_active_staging_parents() {
   done
 }
 
+verify_staged_units() (
+  set -euo pipefail
+  local active_root="$1" verification_root="$2" expected_uid="$3" expected_gid="$4"
+  local docker_unit_b64gzip="$5" identity_unit_b64gzip="$6"
+  local copies_root="$verification_root/copies"
+  [[ "$active_root" == /* && -d "$active_root" && ! -L "$active_root" ]]
+  [[ "$verification_root" == /* && -d "$verification_root" && ! -L "$verification_root" ]]
+  trap 'rm -rf -- "$verification_root"' EXIT
+  install -d -m 0700 "$copies_root"
+  python3 - "$active_root" "$copies_root" "$expected_uid" "$expected_gid" \
+    "$docker_unit_b64gzip" "$identity_unit_b64gzip" \
+    >"$verification_root/transform.stdout" \
+    2>"$verification_root/transform.stderr" <<'PY'
+import base64
+import gzip
+import os
+import pathlib
+import stat
+import sys
+
+active_root = pathlib.Path(sys.argv[1])
+copies_root = pathlib.Path(sys.argv[2])
+expected_uid = int(sys.argv[3])
+expected_gid = int(sys.argv[4])
+mapping = (
+    ("docker.service", "ExecStart", "/usr/local/bin/dockerd"),
+    ("identity-stack.service", "ExecStartPre", "/usr/local/libexec/platform/identity-verify-release"),
+    ("identity-stack.service", "ExecStart", "/usr/local/lib/docker/cli-plugins/docker-compose"),
+    ("identity-stack.service", "ExecStop", "/usr/local/lib/docker/cli-plugins/docker-compose"),
+)
+expected_token_counts = {
+    "/usr/local/bin/dockerd": 1,
+    "/usr/local/libexec/platform/identity-verify-release": 1,
+    "/usr/local/lib/docker/cli-plugins/docker-compose": 2,
+}
+canonical_units = {
+    "docker.service": gzip.decompress(base64.b64decode(sys.argv[5], validate=True)),
+    "identity-stack.service": gzip.decompress(base64.b64decode(sys.argv[6], validate=True)),
+}
+
+
+def exact_regular(path: pathlib.Path, mode: int) -> None:
+    info = path.lstat()
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or path.is_symlink()
+        or (stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid)
+        != (mode, expected_uid, expected_gid)
+    ):
+        raise SystemExit(2)
+
+
+def exact_ancestor_chain(path: pathlib.Path) -> None:
+    relative = path.relative_to(active_root)
+    current = active_root
+    for part in relative.parts[:-1]:
+        current /= part
+        info = current.lstat()
+        if not stat.S_ISDIR(info.st_mode) or current.is_symlink():
+            raise SystemExit(2)
+
+
+unit_names = tuple(dict.fromkeys(specification[0] for specification in mapping))
+originals = {}
+for unit_name in unit_names:
+    staged = active_root / "etc/systemd/system" / unit_name
+    exact_regular(staged, 0o644)
+    staged_bytes = staged.read_bytes()
+    if staged_bytes != canonical_units[unit_name]:
+        raise SystemExit(2)
+    originals[unit_name] = staged_bytes
+
+all_original = b"".join(originals[name] for name in unit_names)
+for token, count in expected_token_counts.items():
+    if all_original.count(token.encode("ascii")) != count:
+        raise SystemExit(2)
+
+replacement_count = 0
+for unit_name in unit_names:
+    transformed = originals[unit_name]
+    for mapped_unit, directive, token in mapping:
+        if mapped_unit != unit_name:
+            continue
+        prefix = f"{directive}={token}".encode("ascii")
+        matches = [
+            line
+            for line in transformed.splitlines(keepends=True)
+            if line.startswith(prefix)
+            and (
+                len(line.rstrip(b"\r\n")) == len(prefix)
+                or line[len(prefix) : len(prefix) + 1] == b" "
+            )
+        ]
+        if len(matches) != 1 or transformed.count(prefix) != 1:
+            raise SystemExit(2)
+        replacement = f"{directive}={active_root}{token}".encode("ascii")
+        transformed = transformed.replace(prefix, replacement, 1)
+        replacement_count += 1
+    destination = copies_root / unit_name
+    descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(transformed)
+
+if replacement_count != 4:
+    raise SystemExit(2)
+
+for unit_name in unit_names:
+    transformed = (copies_root / unit_name).read_bytes()
+    reversed_bytes = transformed
+    for mapped_unit, directive, token in mapping:
+        if mapped_unit != unit_name:
+            continue
+        replacement = f"{directive}={active_root}{token}".encode("ascii")
+        original = f"{directive}={token}".encode("ascii")
+        if reversed_bytes.count(replacement) != 1:
+            raise SystemExit(2)
+        reversed_bytes = reversed_bytes.replace(replacement, original, 1)
+    if reversed_bytes != originals[unit_name]:
+        raise SystemExit(2)
+
+for _, _, token in mapping:
+    executable = active_root / token.removeprefix("/")
+    exact_ancestor_chain(executable)
+    exact_regular(executable, 0o755)
+    if not os.access(executable, os.X_OK):
+        raise SystemExit(2)
+PY
+  systemd-analyze --recursive-errors=yes verify \
+    "$copies_root/docker.service" \
+    "$copies_root/identity-stack.service" \
+    >"$verification_root/systemd.stdout" \
+    2>"$verification_root/systemd.stderr"
+)
+
+if [[ "$*" == --unit-verification-fixture ]]; then
+  fixture_root="$PLATFORM_IDENTITY_UNIT_VERIFICATION_TEST_ROOT"
+  [[ "$fixture_root" == /tmp/* && -d "$fixture_root" && ! -L "$fixture_root" ]]
+  [[ "$fixture_root" == "$(realpath -e -- "$fixture_root")" ]]
+  verify_staged_units \
+    "$fixture_root/active" \
+    "$fixture_root/verification" \
+    "$(id -u)" \
+    "$(id -g)" \
+    "$PLATFORM_IDENTITY_DOCKER_UNIT_B64GZIP" \
+    "$PLATFORM_IDENTITY_STACK_UNIT_B64GZIP"
+  [[ ! -e "$fixture_root/verification" && ! -L "$fixture_root/verification" ]]
+  printf 'Identity staged-unit verification fixture completed.\n'
+  exit 0
+fi
+
 if [[ "$*" == --compressed-payload-fixture ]]; then
   fixture_root="$PLATFORM_IDENTITY_COMPRESSED_PAYLOAD_TEST_ROOT"
   [[ "$fixture_root" == /tmp/* && -d "$fixture_root" && ! -L "$fixture_root" ]]
@@ -196,6 +346,7 @@ readonly generation_name="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 readonly staged_generation="$work_root/generation"
 readonly generation="$generation_root/$generation_name"
 readonly active_generation=/etc/platform/identity
+readonly unit_verification_root="$work_root/unit-verification"
 transaction_started=false
 transaction_committed=false
 previous_generation=""
@@ -324,7 +475,7 @@ fail() {
     fi
   fi
   find "$work_root" -maxdepth 1 -type f -delete >/dev/null 2>&1 || true
-  rm -rf -- "$work_root/docker" "$staged_generation" "$work_root/active" "$work_root/rollback" >/dev/null 2>&1 || true
+  rm -rf -- "$work_root/docker" "$staged_generation" "$work_root/active" "$work_root/rollback" "$unit_verification_root" >/dev/null 2>&1 || true
   printf 'Identity runtime configuration failed safely.\n' >&2
   exit "$original_status"
 }
@@ -489,7 +640,15 @@ bash -n "$work_root/active/usr/local/libexec/platform/identity-health-verify"
 bash -n "$work_root/active/usr/local/libexec/platform/pgbackrest-sidecar"
 "$work_root/active/usr/local/bin/docker" --version >/dev/null
 "$work_root/active/usr/local/lib/docker/cli-plugins/docker-compose" version >/dev/null
-systemd-analyze verify "$work_root/active/etc/systemd/system/docker.service" "$work_root/active/etc/systemd/system/identity-stack.service" >/dev/null
+install -d -m 0700 "$unit_verification_root"
+verify_staged_units \
+  "$work_root/active" \
+  "$unit_verification_root" \
+  0 \
+  0 \
+  '${docker_service_b64gzip}' \
+  '${systemd_unit_b64gzip}'
+[[ ! -e "$unit_verification_root" && ! -L "$unit_verification_root" ]]
 
 python3 - "$staged_generation" "$work_root/active" <<'PY'
 import os
