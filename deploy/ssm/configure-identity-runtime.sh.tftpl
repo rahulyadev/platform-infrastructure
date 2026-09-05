@@ -763,10 +763,10 @@ credential = re.compile(r"[A-Za-z0-9!#$%&()*+,./:;<=>?@\[\]^_`{|}~-]{32,256}")
 for name, field in (("client", "client_secret"), ("database", "bootstrap_password"), ("database", "migrator_password"), ("database", "runtime_password"), ("redis", "bff_password"), ("backup", "repository_cipher")):
     if not credential.fullmatch(objects[name][field]):
         raise SystemExit(2)
-def write(relative, value, gid, mode=0o440):
+def write(relative, value, gid, mode=0o440, uid=0):
     target = generation / relative
     descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
-    os.fchown(descriptor, 0, gid)
+    os.fchown(descriptor, uid, gid)
     os.fchmod(descriptor, mode)
     with os.fdopen(descriptor, "w", encoding="ascii", newline="") as stream:
         stream.write(value)
@@ -784,7 +784,7 @@ for field, output in (("redis_ca_crt", "ca.crt"), ("redis_server_crt", "server.c
 write("tls/redis-client/ca.crt", objects["redis"]["redis_ca_crt"], 10002)
 write("secrets/backup/repository_cipher", objects["backup"]["repository_cipher"], 65532)
 escaped = objects["database"]["bootstrap_password"].replace("\\", "\\\\").replace(":", "\\:")
-write("secrets/database/bootstrap.pgpass", f"postgres:5432:identity:identity_bootstrap:{escaped}\n", 10001)
+write("secrets/database/bootstrap.pgpass", f"postgres:5432:identity:identity_bootstrap:{escaped}\n", 10001, 0o600, 10001)
 acl = "user default off\n" + f"user portfolio_bff reset on >{objects['redis']['bff_password']} ~reference-bff:production:portfolio:identity:* +ping +get +set +getdel +del +eval +client|setinfo\n"
 write("secrets/redis-server/users.acl", acl, 999)
 PY

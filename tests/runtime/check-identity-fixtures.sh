@@ -341,6 +341,7 @@ mkdir -p "$temporary/database" "$temporary/database-server" "$temporary/migrator
 printf '%s' "$bootstrap_password" >"$temporary/database-server/bootstrap_password"
 printf '%s' "$migrator_password" >"$temporary/database/migrator_password"
 printf '%s' "$runtime_password" >"$temporary/database/runtime_password"
+printf 'postgres:5432:identity:identity_bootstrap:%s\n' "$bootstrap_password" >"$temporary/database/bootstrap.pgpass"
 printf '%s' "$migrator_password" >"$temporary/migrator-secret/migrator_password"
 printf '%s' "$redis_password" >"$temporary/redis-secret/bff_password"
 printf '%s' "$redis_password" >"$temporary/redis-client-secret/bff_password"
@@ -349,9 +350,10 @@ printf 'user default off\nuser portfolio_bff reset on >%s ~reference-bff:product
 cp "$temporary/postgres/ca.crt" "$temporary/postgres-client/ca.crt"
 cp "$temporary/redis/ca.crt" "$temporary/redis-client-tls/ca.crt"
 chmod 0440 "$temporary"/{database,database-server,migrator-secret,redis-secret,redis-client-secret,redis-client-tls,client-secret}/* "$temporary/postgres-client/ca.crt"
+chmod 0600 "$temporary/database/bootstrap.pgpass"
 chmod 0550 "$temporary"/{database,database-server,migrator-secret,redis-secret,redis-client-secret,redis-client-tls,client-secret,postgres-client}
 docker run --rm --user 0:0 --mount "type=bind,src=$temporary,dst=/work" --entrypoint /bin/sh "$postgres_image" -c \
-  'chown -R 0:10001 /work/database /work/migrator-secret /work/postgres-client; chown -R 0:999 /work/database-server /work/redis-secret; chown -R 0:10002 /work/redis-client-secret /work/redis-client-tls /work/client-secret'
+  'chown -R 0:10001 /work/database /work/migrator-secret /work/postgres-client; chown 10001:10001 /work/database/bootstrap.pgpass; chown -R 0:999 /work/database-server /work/redis-secret; chown -R 0:10002 /work/redis-client-secret /work/redis-client-tls /work/client-secret'
 
 cat >"$temporary/postgres-hba.conf" <<'HBA'
 local all identity_bootstrap trust
@@ -436,6 +438,7 @@ docker run --detach --name "$postgres" --network "$network" --network-alias post
   --mount "type=volume,src=$postgres_tls_volume,dst=/run/tls/postgres,readonly" \
   --mount "type=bind,src=$temporary/postgres-client,dst=/run/tls/client,readonly" \
   --mount "type=bind,src=$temporary/database-server/bootstrap_password,dst=/run/secrets/database/bootstrap_password,readonly" \
+  --mount "type=bind,src=$temporary/database/bootstrap.pgpass,dst=/run/secrets/database/bootstrap.pgpass,readonly" \
   --mount "type=bind,src=$temporary/postgres-hba.conf,dst=/run/config/postgres-hba.conf,readonly" \
   --env POSTGRES_DB=identity --env POSTGRES_USER=identity_bootstrap \
   --env POSTGRES_PASSWORD_FILE=/run/secrets/database/bootstrap_password \
@@ -455,6 +458,9 @@ if ! docker inspect --format '{{.State.Running}}' "$postgres" 2>/dev/null | grep
   exit 1
 fi
 docker exec "$postgres" pg_isready --dbname 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' >/dev/null
+docker exec --user 10001:10001 --env PGPASSFILE=/run/secrets/database/bootstrap.pgpass "$postgres" \
+  psql 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/client/ca.crt' \
+  --no-psqlrc --tuples-only --no-align --command 'SELECT 1;' | grep -Fxq 1
 
 stage=postgres_roles
 if ! docker exec --user 10001:10001 --env PGPASSWORD="$bootstrap_password" --interactive "$postgres" \
