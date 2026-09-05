@@ -51,6 +51,7 @@ grep -Fq 'remove_unactivated_release' deploy/ssm/deploy-identity.sh
 grep -Fq 'stop_preactivation_services' deploy/ssm/deploy-identity.sh
 grep -Fq 'user: "999:999"' config/runtime/identity-compose.yml.tftpl
 grep -Fq 'database-server/bootstrap_password:/run/secrets/database/bootstrap_password:ro' config/runtime/identity-compose.yml.tftpl
+grep -Fq 'database/bootstrap.pgpass:/run/secrets/database/bootstrap.pgpass:ro' config/runtime/identity-compose.yml.tftpl
 ! grep -Fq '/secrets/database:/run/secrets/database:ro' config/runtime/identity-compose.yml.tftpl
 ! grep -Eq -- '--privileged|--cap-add ALL' deploy/ssm/deploy-identity.sh
 [[ "$(grep -Fc 'run --rm migrator' deploy/ssm/deploy-identity.sh)" == 1 ]]

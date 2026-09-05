@@ -448,6 +448,7 @@ for purpose_path in ("secrets/database-server", "secrets/redis-server", "secrets
     require(purpose_path in configure)
 require('write("secrets/database-server/bootstrap_password", objects["database"]["bootstrap_password"], 999)' in configure)
 require('write(f"secrets/database/{field}", objects["database"][field], 10001)' in configure)
+require('write("secrets/database/bootstrap.pgpass", f"postgres:5432:identity:identity_bootstrap:{escaped}\\n", 10001, 0o600, 10001)' in configure)
 
 require(runtime_identity.count("base64gzip(") == 14)
 require("base64encode(" not in runtime_identity)
