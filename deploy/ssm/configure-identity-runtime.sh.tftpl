@@ -42,15 +42,58 @@ prepare_manual_active_staging_parents() {
   done
 }
 
+report_configure_failure() {
+  python3 - "$1" "$2" "$3" "$4" <<'DIAGNOSTIC'
+import hashlib
+import pathlib
+import sys
+
+stage, status, stdout_path, stderr_path = sys.argv[1:]
+allowed = {
+    "UNIT_SETUP", "UNIT_TRANSFORM", "UNIT_SYSTEMD", "WORK_ROOT",
+    "DOWNLOAD_DOCKER", "DOWNLOAD_COMPOSE", "DOWNLOAD_BACKUP", "ARCHIVE_CHECK",
+    "GENERATION_STAGE", "SECRET_FETCH", "SECRET_STAGE", "DATABASE_TLS", "REDIS_TLS",
+    "MANUAL_STAGE", "HELPER_SYNTAX", "DOCKER_VERSION", "COMPOSE_VERSION",
+    "UNIT_VERIFICATION", "STAGED_METADATA", "CONVERGENCE", "PRE_TRANSACTION",
+    "TRANSACTION", "CLEANUP",
+}
+if stage not in allowed or not status.isdecimal() or not 1 <= int(status) <= 255:
+    raise SystemExit(2)
+fields = [f"stage={stage}", f"status={status}"]
+for label, filename in (("stdout", stdout_path), ("stderr", stderr_path)):
+    # Only verifier-owned non-secret captures are supplied; other stages use no capture.
+    value = b"" if filename == "-" else pathlib.Path(filename).read_bytes()
+    fields.extend((f"{label}_bytes={len(value)}", f"{label}_lines={len(value.splitlines())}",
+                   f"{label}_sha256={hashlib.sha256(value).hexdigest()}"))
+print("IDENTITY_CONFIGURE_FAILURE " + " ".join(fields), file=sys.stderr)
+DIAGNOSTIC
+}
+
 verify_staged_units() (
   set -euo pipefail
+  # Do not inherit the transaction ERR handler: it would erase these captures first.
+  trap - ERR
   local active_root="$1" verification_root="$2" expected_uid="$3" expected_gid="$4"
   local docker_unit_b64gzip="$5" identity_unit_b64gzip="$6"
   local copies_root="$verification_root/copies"
+  local verification_stage=UNIT_SETUP verification_stdout=- verification_stderr=-
+  finish_unit_verification() {
+    local status=$?
+    trap - EXIT ERR
+    if [[ "$status" != 0 ]]; then
+      report_configure_failure "$verification_stage" "$status" "$verification_stdout" "$verification_stderr"
+    fi
+    rm -rf -- "$verification_root"
+    [[ ! -e "$verification_root" && ! -L "$verification_root" ]]
+    exit "$status"
+  }
   [[ "$active_root" == /* && -d "$active_root" && ! -L "$active_root" ]]
   [[ "$verification_root" == /* && -d "$verification_root" && ! -L "$verification_root" ]]
-  trap 'rm -rf -- "$verification_root"' EXIT
+  trap finish_unit_verification EXIT
   install -d -m 0700 "$copies_root"
+  verification_stage=UNIT_TRANSFORM
+  verification_stdout="$verification_root/transform.stdout"
+  verification_stderr="$verification_root/transform.stderr"
   python3 - "$active_root" "$copies_root" "$expected_uid" "$expected_gid" \
     "$docker_unit_b64gzip" "$identity_unit_b64gzip" \
     >"$verification_root/transform.stdout" \
@@ -169,6 +212,9 @@ for _, _, token in mapping:
     if not os.access(executable, os.X_OK):
         raise SystemExit(2)
 PY
+  verification_stage=UNIT_SYSTEMD
+  verification_stdout="$verification_root/systemd.stdout"
+  verification_stderr="$verification_root/systemd.stderr"
   systemd-analyze --recursive-errors=yes verify \
     "$copies_root/docker.service" \
     "$copies_root/identity-stack.service" \
@@ -347,6 +393,7 @@ readonly staged_generation="$work_root/generation"
 readonly generation="$generation_root/$generation_name"
 readonly active_generation=/etc/platform/identity
 readonly unit_verification_root="$work_root/unit-verification"
+configure_stage=WORK_ROOT
 transaction_started=false
 transaction_committed=false
 previous_generation=""
@@ -468,6 +515,7 @@ restore_transaction() {
 fail() {
   local original_status=$?
   trap - ERR
+  report_configure_failure "$configure_stage" "$original_status" - -
   if [[ "$transaction_started" == true && "$transaction_committed" == false ]]; then
     if ! restore_transaction; then
       printf 'Identity runtime configuration failed and prior host restoration failed.\n' >&2
@@ -497,17 +545,21 @@ download_verified() {
   : >"$work_root/download.stderr"
 }
 
+configure_stage=DOWNLOAD_DOCKER
 download_verified "https://download.docker.com/linux/static/stable/aarch64/docker-$${docker_version}.tgz" "$docker_sha256" "$work_root/docker.tgz"
 tar --extract --gzip --file "$work_root/docker.tgz" --directory "$work_root"
 for binary in containerd containerd-shim-runc-v2 ctr docker dockerd docker-init docker-proxy runc; do
   [[ -f "$work_root/docker/$binary" && ! -L "$work_root/docker/$binary" && -x "$work_root/docker/$binary" ]]
   install -D -m 0755 "$work_root/docker/$binary" "$work_root/active/usr/local/bin/$binary"
 done
+configure_stage=DOWNLOAD_COMPOSE
 download_verified "https://github.com/docker/compose/releases/download/v$${compose_version}/docker-compose-linux-aarch64" "$compose_sha256" "$work_root/docker-compose"
 install -D -m 0755 "$work_root/docker-compose" "$work_root/active/usr/local/lib/docker/cli-plugins/docker-compose"
+configure_stage=DOWNLOAD_BACKUP
 download_verified "https://github.com/pgbackrest/pgbackrest/releases/download/release%2F$${pgbackrest_version}/pgbackrest-$${pgbackrest_version}.tar.gz" "$pgbackrest_sha256" "$work_root/pgbackrest.tar.gz"
 install -D -m 0644 "$work_root/pgbackrest.tar.gz" "$work_root/active/opt/platform/identity/pgbackrest-$${pgbackrest_version}.tar.gz"
 
+configure_stage=ARCHIVE_CHECK
 python3 - "$work_root/docker.tgz" "$work_root/pgbackrest.tar.gz" <<'PY'
 import pathlib
 import sys
@@ -523,6 +575,7 @@ for value in sys.argv[1:]:
                 raise SystemExit(2)
 PY
 
+configure_stage=GENERATION_STAGE
 install -d -m 0755 "$staged_generation/secrets" "$staged_generation/tls"
 install -d -m 0750 -o root -g 10002 "$staged_generation/secrets/client" "$staged_generation/secrets/redis-client" "$staged_generation/tls/redis-client"
 install -d -m 0750 -o root -g 10001 "$staged_generation/secrets/database" "$staged_generation/tls/postgres-client"
@@ -545,11 +598,13 @@ fetch_secret() {
   chmod 0600 "$destination"
   : >"$work_root/secret.stderr"
 }
+configure_stage=SECRET_FETCH
 fetch_secret "$client_secret_arn" "$work_root/client.json"
 fetch_secret "$database_secret_arn" "$work_root/database.json"
 fetch_secret "$redis_secret_arn" "$work_root/redis.json"
 fetch_secret "$backup_secret_arn" "$work_root/backup.json"
 
+configure_stage=SECRET_STAGE
 python3 - "$work_root" "$staged_generation" 2>"$work_root/secret.stderr" <<'PY'
 import json
 import os
@@ -626,20 +681,27 @@ validate_server_identity() {
   openssl pkey -in "$directory/server.key" -pubout 2>/dev/null | sha256sum | cut -d' ' -f1 >"$work_root/key.pub"
   cmp -s "$work_root/cert.pub" "$work_root/key.pub"
 }
+configure_stage=DATABASE_TLS
 validate_server_identity "$staged_generation/tls/postgres-server" postgres
+configure_stage=REDIS_TLS
 validate_server_identity "$staged_generation/tls/redis-server" redis
 
+configure_stage=MANUAL_STAGE
 prepare_manual_active_staging_parents "$work_root/active" 0 0
 write_b64gzip '${systemd_unit_b64gzip}' "$work_root/active/etc/systemd/system/identity-stack.service" 0644
 write_b64gzip '${verify_release_b64gzip}' "$work_root/active/usr/local/libexec/platform/identity-verify-release" 0755
 write_b64gzip '${health_verify_b64gzip}' "$work_root/active/usr/local/libexec/platform/identity-health-verify" 0755
 write_b64gzip '${pgbackrest_sidecar_b64gzip}' "$work_root/active/usr/local/libexec/platform/pgbackrest-sidecar" 0755
 write_b64gzip '${docker_service_b64gzip}' "$work_root/active/etc/systemd/system/docker.service" 0644
+configure_stage=HELPER_SYNTAX
 bash -n "$work_root/active/usr/local/libexec/platform/identity-verify-release"
 bash -n "$work_root/active/usr/local/libexec/platform/identity-health-verify"
 bash -n "$work_root/active/usr/local/libexec/platform/pgbackrest-sidecar"
+configure_stage=DOCKER_VERSION
 "$work_root/active/usr/local/bin/docker" --version >/dev/null
+configure_stage=COMPOSE_VERSION
 "$work_root/active/usr/local/lib/docker/cli-plugins/docker-compose" version >/dev/null
+configure_stage=UNIT_VERIFICATION
 install -d -m 0700 "$unit_verification_root"
 verify_staged_units \
   "$work_root/active" \
@@ -650,6 +712,7 @@ verify_staged_units \
   '${systemd_unit_b64gzip}'
 [[ ! -e "$unit_verification_root" && ! -L "$unit_verification_root" ]]
 
+configure_stage=STAGED_METADATA
 python3 - "$staged_generation" "$work_root/active" <<'PY'
 import os
 import pathlib
@@ -668,6 +731,7 @@ for path in (pathlib.Path(sys.argv[1]) / "secrets").rglob("*"):
         raise SystemExit(2)
 PY
 
+configure_stage=CONVERGENCE
 mapfile -t staged_files < <(find "$work_root/active" -type f -print | LC_ALL=C sort)
 all_active_equal=true
 for source in "$${staged_files[@]}"; do
@@ -730,6 +794,7 @@ if [[ "$all_active_equal" == true && "$all_directories_equal" == true && "$gener
   exit 0
 fi
 
+configure_stage=PRE_TRANSACTION
 if systemctl is-active --quiet identity-stack.service; then
   printf 'Active Identity workload requires a separately reviewed host maintenance operation.\n' >&2
   exit 1
@@ -751,6 +816,7 @@ for source in "$${staged_files[@]}"; do
   snapshot_target "$target"
 done
 
+configure_stage=TRANSACTION
 transaction_started=true
 mv -- "$staged_generation" "$generation"
 for source in "$${staged_files[@]}"; do
@@ -766,6 +832,7 @@ systemctl start docker.service
 ! systemctl is-active --quiet identity-stack.service
 transaction_committed=true
 
+configure_stage=CLEANUP
 rm -rf -- "$work_root"/*
 trap - ERR
 printf 'Identity runtime source configured transactionally; no workload was started.\n'

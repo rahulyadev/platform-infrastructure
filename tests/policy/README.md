@@ -118,6 +118,12 @@ managed executables present only in staging and rejects every missing, non-execu
 live-only/decoy, wrong-directive, duplicate-replacement, changed-argument, altered-canonical,
 weakened-recursion, or suppressed-status case. A partial alternate root, live-root placeholder,
 bind mount, installed-unit rewrite, filtered diagnostics, or ignored verifier status is forbidden.
+The verifier retains a fixed stage, actual status, byte/line counts and SHA-256 before cleanup;
+no captured contents are printed. Independent real-tool capture oracles test transformation and
+direct unit-syntax failures, including the inherited transaction ERR-handler ordering. Negative
+mutations reject early cleanup, lost exit status, suppressed observation and forged hashes. The
+source-derived diagnostic is JSON-round-tripped and executed under Bash with synthetic commands
+through transformation, both actual recursive modes, and success/failure cleanup.
 
 Every payload embedded in the Identity configure document is produced with
 OpenTofu `base64gzip`, decoded through the fixed base64/gzip pipeline into a
