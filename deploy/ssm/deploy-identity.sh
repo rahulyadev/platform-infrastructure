@@ -42,6 +42,7 @@ recovery_info=""
 recovery_metadata=""
 release=""
 release_created=false
+preactivation_services_started=false
 
 inject_failure() {
   if [[ -n "$test_root" && "${PLATFORM_IDENTITY_FAIL_AT:-}" == "$1" ]]; then
@@ -167,14 +168,28 @@ remove_unactivated_release() {
   release_created=false
 }
 
+stop_preactivation_services() {
+  [[ "$preactivation_services_started" == true ]] || return 0
+  [[ "$release" == "$releases"/* && -d "$release" && ! -L "$release" ]] || return
+  [[ -f "$release/compose.yml" && ! -L "$release/compose.yml" ]] || return
+  [[ -f "$release/release.env" && ! -L "$release/release.env" ]] || return
+  docker compose --file "$release/compose.yml" --project-name identity-production down --remove-orphans || return
+  [[ -z "$(docker ps --all --filter label=com.docker.compose.project=identity-production --format '{{.ID}}')" ]] || return
+  preactivation_services_started=false
+}
+
 on_error() {
   local original_status=$? recovery_status=0
   trap - ERR
   deployment_failed_metric
   if [[ "$activation_started" == true && "$activation_committed" == false ]]; then
     restore_prior_release || recovery_status=1
+  elif [[ "$activation_started" == false ]]; then
+    stop_preactivation_services || recovery_status=1
   fi
-  remove_unactivated_release || recovery_status=1
+  if [[ "$recovery_status" == 0 ]]; then
+    remove_unactivated_release || recovery_status=1
+  fi
   if [[ "$recovery_status" != 0 ]]; then
     printf 'Identity deployment failed and exact prior-state recovery failed.\n' >&2
     exit 1
@@ -248,6 +263,12 @@ trap cleanup EXIT
 if [[ -n "$test_root" && "$1" == --cleanup-fixture ]]; then
   release="${PLATFORM_IDENTITY_FIXTURE_RELEASE:?fixture release required}"
   release_created=true
+  preactivation_services_started="${PLATFORM_IDENTITY_FIXTURE_PREACTIVATION_STARTED:-false}"
+  [[ "$preactivation_services_started" == true || "$preactivation_services_started" == false ]]
+  if ! stop_preactivation_services; then
+    printf 'Identity pre-activation service cleanup fixture failed safely.\n' >&2
+    exit 1
+  fi
   remove_unactivated_release
   printf 'Identity pre-activation cleanup fixture completed.\n'
   exit 0
@@ -306,7 +327,8 @@ done
 
 docker compose --file "$release/compose.yml" --project-name identity-production run --rm --no-deps --user root \
   --cap-add CHOWN --cap-add FOWNER postgres \
-  sh -c 'chown 999:999 /run/postgresql /var/spool/pgbackrest && chmod 0770 /run/postgresql /var/spool/pgbackrest'
+  sh -c 'install -d -m 0700 /var/lib/postgresql/18/docker && chmod 0700 /var/lib/postgresql/18/docker && chmod 0770 /run/postgresql /var/spool/pgbackrest && chown 999:999 /var/lib/postgresql/18/docker /run/postgresql /var/spool/pgbackrest && chmod 0700 /var/lib/postgresql && chown 999:999 /var/lib/postgresql'
+preactivation_services_started=true
 docker compose --file "$release/compose.yml" --project-name identity-production up --detach --wait postgres redis
 docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY \
   --user 10001:10001 --env PGPASSFILE=/run/secrets/database/bootstrap.pgpass postgres \

@@ -13,6 +13,7 @@ services:
   postgres:
     image: ${postgres_image}
     platform: linux/arm64/v8
+    user: "999:999"
     restart: unless-stopped
     read_only: true
     cap_drop: [ALL]

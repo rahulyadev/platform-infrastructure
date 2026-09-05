@@ -13,8 +13,9 @@ docker info >/dev/null 2>&1 || {
 
 if [[ -n "${IDENTITY_TASK003_PACKED_RESULT_OBJECT:-}" ]]; then
   [[ "$IDENTITY_TASK003_PACKED_RESULT_OBJECT" == b7bfb6e29824326a9a354bf3c7d0fe6988d0117a ]]
+  # config/runtime/identity-compose.yml.tftpl is intentionally covered by the
+  # fresh Task009 Postgres hardening fixture and the independent source gate.
   unchanged_packed_inputs=(
-    config/runtime/identity-compose.yml.tftpl
     config/runtime/identity-images.json
     config/runtime/identity-launcher.py
     config/runtime/pgbackrest.conf.tftpl
@@ -397,17 +398,19 @@ docker run --rm --user 0:0 \
   --mount "type=volume,src=$restore_volume,dst=/restore" \
   --entrypoint /bin/sh "$postgres_image" -c 'chown 2001:2001 /repository /restore && chmod 0700 /repository /restore'
 if docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --mount "type=volume,src=$data_volume,dst=/var/lib/postgresql" \
   --mount "type=volume,src=$socket_volume,dst=/socket" \
   --mount "type=volume,src=$spool_volume,dst=/spool" \
-  --entrypoint /bin/sh "$postgres_image" -c 'chown 999:999 /socket /spool'; then
+  --entrypoint /bin/sh "$postgres_image" -c 'install -d -m 0700 /var/lib/postgresql/18/docker && chmod 0700 /var/lib/postgresql/18/docker && chmod 0770 /socket /spool && chown 999:999 /var/lib/postgresql/18/docker /socket /spool && chmod 0700 /var/lib/postgresql && chown 999:999 /var/lib/postgresql'; then
   printf 'Identity volume preparation succeeded without its two bounded capabilities.\n' >&2
   exit 1
 fi
 docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --cap-add CHOWN --cap-add FOWNER \
   --security-opt no-new-privileges \
+  --mount "type=volume,src=$data_volume,dst=/var/lib/postgresql" \
   --mount "type=volume,src=$socket_volume,dst=/socket" \
   --mount "type=volume,src=$spool_volume,dst=/spool" \
-  --entrypoint /bin/sh "$postgres_image" -c 'chown 999:999 /socket /spool && chmod 0770 /socket /spool'
+  --entrypoint /bin/sh "$postgres_image" -c 'install -d -m 0700 /var/lib/postgresql/18/docker && chmod 0700 /var/lib/postgresql/18/docker && chmod 0770 /socket /spool && chown 999:999 /var/lib/postgresql/18/docker /socket /spool && chmod 0700 /var/lib/postgresql && chown 999:999 /var/lib/postgresql'
 docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --cap-add CHOWN --cap-add FOWNER \
   --security-opt no-new-privileges \
   --mount "type=volume,src=$restore_socket_volume,dst=/socket" \
@@ -416,6 +419,8 @@ docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --cap-add C
 
 stage=postgres_start
 docker run --detach --name "$postgres" --network "$network" --network-alias postgres \
+  --user 999:999 --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=64m \
   --mount "type=volume,src=$data_volume,dst=/var/lib/postgresql" \
   --mount "type=volume,src=$socket_volume,dst=/run/postgresql" \
   --mount "type=volume,src=$spool_volume,dst=/var/spool/pgbackrest" \
