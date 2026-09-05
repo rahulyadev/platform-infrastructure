@@ -433,7 +433,7 @@ flock -w 30 9
 
 directory_exact() {
   local directory="$1" mode="$2"
-  [[ -d "$directory" && ! -L "$directory" && "$(stat -c '%a:%u:%g' "$directory")" == "$mode:0:0" ]]
+  [[ -d "$directory" && ! -L "$directory" && "$(stat -c '%a:%u:%g' "$directory")" == "$${mode#0}:0:0" ]]
 }
 
 register_directory() {

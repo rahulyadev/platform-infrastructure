@@ -351,6 +351,7 @@ try:
         and "systemd-analyze verify" not in source
         and source.count(production_call) == 1
         and source.count("--unit-verification-fixture") == 1
+        and source.count('''[[ -d "$directory" && ! -L "$directory" && "$(stat -c '%a:%u:%g' "$directory")" == "$${mode#0}:0:0" ]]''') == 1
         and source.index(production_call) < source.index("transaction_started=true")
         and verifier.index('      report_configure_failure ') < verifier.index('    rm -rf -- "$verification_root"') < verifier.index('    exit "$status"')
         and source.count('report_configure_failure "$configure_stage" "$original_status" - -') == 1

@@ -426,6 +426,7 @@ require(
     < configure.index("transaction_started=true")
 )
 require(configure.count("--unit-verification-fixture") == 1)
+require(configure.count('''[[ -d "$directory" && ! -L "$directory" && "$(stat -c '%a:%u:%g' "$directory")" == "$${mode#0}:0:0" ]]''') == 1)
 require(
     unit_verifier.index('      report_configure_failure ')
     < unit_verifier.index('    rm -rf -- "$verification_root"')
