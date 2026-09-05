@@ -50,6 +50,9 @@ Secret values are never committed. The four host-readable secret schemas are nam
 - Google OAuth: `client_id` and `client_secret`; never host-readable.
 
 Secrets are fetched only by exact ARN in the fixed configure document and captured without tracing.
+The PostgreSQL bootstrap password is staged in a server-only root:999 directory and mounted as one
+read-only file; the separate root:10001 client directory exposes only the bootstrap pgpass file to
+the database container. Migrator and runtime passwords are not mounted into PostgreSQL.
 Configuration holds the same exclusive lifecycle lock as deploy and rollback, stages every
 download, executable, unit, helper, generated file, secret, TLS identity, owner, and mode, and
 validates the complete candidate before an adjacent atomic rename can affect an active path. Its

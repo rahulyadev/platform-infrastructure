@@ -201,8 +201,11 @@ for fixed in (
 require(compose.count('entrypoint: [python, /opt/platform/identity-launcher.py]') == 3)
 require(compose.count('test: [CMD, python, scripts/healthcheck.py]') == 2)
 require('--tls-auth-clients\n      - "no"' in compose)
-for purpose_path in ("secrets/redis-server", "secrets/redis-client", "tls/redis-server", "tls/redis-client", "tls/postgres-server", "tls/postgres-client"):
+for purpose_path in ("secrets/database-server", "secrets/redis-server", "secrets/redis-client", "tls/redis-server", "tls/redis-client", "tls/postgres-server", "tls/postgres-client"):
     require(purpose_path in compose)
+require("/secrets/database:/run/secrets/database:ro" not in compose)
+require("database-server/bootstrap_password:/run/secrets/database/bootstrap_password:ro" in compose)
+require("database/bootstrap.pgpass:/run/secrets/database/bootstrap.pgpass:ro" in compose)
 for forbidden in ("65532:65532", "DATABASE_HOST:", "COGNITO_JWKS_URI:", "COGNITO_AUDIENCE:", "REDIS_USERNAME:", "REDIS_KEY_PREFIX:", "cookie_encryption", "client.crt", "client.key"):
     require(forbidden not in compose)
 
@@ -441,8 +444,10 @@ for fixed in (
     'if stage not in allowed or not status.isdecimal() or not 1 <= int(status) <= 255:',
 ):
     require(configure.count(fixed) == 1)
-for purpose_path in ("secrets/redis-server", "secrets/redis-client", "tls/redis-server", "tls/redis-client", "tls/postgres-server", "tls/postgres-client"):
+for purpose_path in ("secrets/database-server", "secrets/redis-server", "secrets/redis-client", "tls/redis-server", "tls/redis-client", "tls/postgres-server", "tls/postgres-client"):
     require(purpose_path in configure)
+require('write("secrets/database-server/bootstrap_password", objects["database"]["bootstrap_password"], 999)' in configure)
+require('write(f"secrets/database/{field}", objects["database"][field], 10001)' in configure)
 
 require(runtime_identity.count("base64gzip(") == 14)
 require("base64encode(" not in runtime_identity)
