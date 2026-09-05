@@ -325,10 +325,12 @@ for image in "$api_image" "$bff_image"; do
   docker image inspect --format '{{join .RepoDigests "\n"}}' "$image" | grep -Fxq "$image"
 done
 
+preactivation_services_started=true
+docker compose --file "$release/compose.yml" --project-name identity-production run --rm --no-deps --user 999:999 postgres \
+  sh -c 'install -d -m 0700 /var/lib/postgresql/18/docker && chmod 0700 /var/lib/postgresql /var/lib/postgresql/18/docker'
 docker compose --file "$release/compose.yml" --project-name identity-production run --rm --no-deps --user root \
   --cap-add CHOWN --cap-add FOWNER postgres \
-  sh -c 'install -d -m 0700 /var/lib/postgresql/18/docker && chmod 0700 /var/lib/postgresql/18/docker && chmod 0770 /run/postgresql /var/spool/pgbackrest && chown 999:999 /var/lib/postgresql/18/docker /run/postgresql /var/spool/pgbackrest && chmod 0700 /var/lib/postgresql && chown 999:999 /var/lib/postgresql'
-preactivation_services_started=true
+  sh -c 'chmod 0770 /run/postgresql /var/spool/pgbackrest && chown 999:999 /run/postgresql /var/spool/pgbackrest'
 docker compose --file "$release/compose.yml" --project-name identity-production up --detach --wait postgres redis
 docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY \
   --user 10001:10001 --env PGPASSFILE=/run/secrets/database/bootstrap.pgpass postgres \

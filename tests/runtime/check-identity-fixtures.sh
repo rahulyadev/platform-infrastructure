@@ -397,20 +397,29 @@ docker run --rm --user 0:0 \
   --mount "type=volume,src=$repository_volume,dst=/repository" \
   --mount "type=volume,src=$restore_volume,dst=/restore" \
   --entrypoint /bin/sh "$postgres_image" -c 'chown 2001:2001 /repository /restore && chmod 0700 /repository /restore'
-if docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --security-opt no-new-privileges \
+docker run --rm --network none --user 999:999 --read-only --cap-drop ALL --security-opt no-new-privileges \
   --mount "type=volume,src=$data_volume,dst=/var/lib/postgresql" \
+  --entrypoint /bin/sh "$postgres_image" -c 'install -d -m 0700 /var/lib/postgresql/18/docker && chmod 0700 /var/lib/postgresql /var/lib/postgresql/18/docker'
+docker run --rm --network none --user 999:999 --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --mount "type=volume,src=$data_volume,dst=/var/lib/postgresql" \
+  --entrypoint /bin/sh "$postgres_image" -c 'install -d -m 0700 /var/lib/postgresql/18/docker && chmod 0700 /var/lib/postgresql /var/lib/postgresql/18/docker'
+if docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --security-opt no-new-privileges \
   --mount "type=volume,src=$socket_volume,dst=/socket" \
   --mount "type=volume,src=$spool_volume,dst=/spool" \
-  --entrypoint /bin/sh "$postgres_image" -c 'install -d -m 0700 /var/lib/postgresql/18/docker && chmod 0700 /var/lib/postgresql/18/docker && chmod 0770 /socket /spool && chown 999:999 /var/lib/postgresql/18/docker /socket /spool && chmod 0700 /var/lib/postgresql && chown 999:999 /var/lib/postgresql'; then
+  --entrypoint /bin/sh "$postgres_image" -c 'chmod 0770 /socket /spool && chown 999:999 /socket /spool'; then
   printf 'Identity volume preparation succeeded without its two bounded capabilities.\n' >&2
   exit 1
 fi
 docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --cap-add CHOWN --cap-add FOWNER \
   --security-opt no-new-privileges \
-  --mount "type=volume,src=$data_volume,dst=/var/lib/postgresql" \
   --mount "type=volume,src=$socket_volume,dst=/socket" \
   --mount "type=volume,src=$spool_volume,dst=/spool" \
-  --entrypoint /bin/sh "$postgres_image" -c 'install -d -m 0700 /var/lib/postgresql/18/docker && chmod 0700 /var/lib/postgresql/18/docker && chmod 0770 /socket /spool && chown 999:999 /var/lib/postgresql/18/docker /socket /spool && chmod 0700 /var/lib/postgresql && chown 999:999 /var/lib/postgresql'
+  --entrypoint /bin/sh "$postgres_image" -c 'chmod 0770 /socket /spool && chown 999:999 /socket /spool'
+docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --cap-add CHOWN --cap-add FOWNER \
+  --security-opt no-new-privileges \
+  --mount "type=volume,src=$socket_volume,dst=/socket" \
+  --mount "type=volume,src=$spool_volume,dst=/spool" \
+  --entrypoint /bin/sh "$postgres_image" -c 'chmod 0770 /socket /spool && chown 999:999 /socket /spool'
 docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --cap-add CHOWN --cap-add FOWNER \
   --security-opt no-new-privileges \
   --mount "type=volume,src=$restore_socket_volume,dst=/socket" \
