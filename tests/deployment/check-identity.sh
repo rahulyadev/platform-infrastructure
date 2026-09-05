@@ -45,6 +45,9 @@ grep -Fq 'aws secretsmanager get-secret-value' deploy/ssm/configure-identity-run
 grep -Fq 'sha256sum --check --status' deploy/ssm/configure-identity-runtime.sh.tftpl
 grep -Fq 'get-login-password --region ap-south-1 | docker login --username AWS --password-stdin' deploy/ssm/deploy-identity.sh
 grep -Fq "docker image inspect --format '{{.Architecture}}/{{.Os}}'" deploy/ssm/deploy-identity.sh
+grep -Fq -- '--cap-add CHOWN --cap-add FOWNER postgres' deploy/ssm/deploy-identity.sh
+grep -Fq 'remove_unactivated_release' deploy/ssm/deploy-identity.sh
+! grep -Eq -- '--privileged|--cap-add ALL' deploy/ssm/deploy-identity.sh
 [[ "$(grep -Fc 'run --rm migrator' deploy/ssm/deploy-identity.sh)" == 1 ]]
 ! grep -Fq 'migrator check' deploy/ssm/deploy-identity.sh
 grep -Fq 'identity-health-verify' deploy/ssm/deploy-identity.sh deploy/ssm/rollback-identity.sh
@@ -308,6 +311,30 @@ PATH="$root/bin:$PATH" PLATFORM_IDENTITY_LIFECYCLE_TEST_ROOT="$root" \
 [[ "$(readlink -f -- "$root/opt/platform/identity/current")" == "$root/opt/platform/identity/releases/candidate" ]]
 [[ "$(readlink -f -- "$root/opt/platform/identity/previous")" == "$root/opt/platform/identity/releases/old" ]]
 [[ "$(<"$root/service-target")" == "$root/opt/platform/identity/releases/candidate" ]]
+
+for variant in exact unexpected; do
+  root="$temporary/deploy-cleanup-$variant"
+  install -d -m 0755 "$root/run/lock" "$root/opt/platform/identity/releases/partial"
+  : >"$root/run/lock/platform-identity-lifecycle.lock"
+  chmod 0600 "$root/run/lock/platform-identity-lifecycle.lock"
+  printf 'compose\n' >"$root/opt/platform/identity/releases/partial/compose.yml"
+  printf 'environment\n' >"$root/opt/platform/identity/releases/partial/release.env"
+  chmod 0644 "$root/opt/platform/identity/releases/partial/compose.yml"
+  chmod 0600 "$root/opt/platform/identity/releases/partial/release.env"
+  if [[ "$variant" == unexpected ]]; then
+    printf 'retain\n' >"$root/opt/platform/identity/releases/partial/unexpected"
+    if PLATFORM_IDENTITY_LIFECYCLE_TEST_ROOT="$root" PLATFORM_IDENTITY_FIXTURE_RELEASE="$root/opt/platform/identity/releases/partial" \
+      bash deploy/ssm/deploy-identity.sh --cleanup-fixture >"$temporary/deploy-cleanup.out" 2>&1; then
+      printf 'Identity pre-activation cleanup accepted unexpected release content.\n' >&2
+      exit 1
+    fi
+    [[ -f "$root/opt/platform/identity/releases/partial/unexpected" ]]
+  else
+    PLATFORM_IDENTITY_LIFECYCLE_TEST_ROOT="$root" PLATFORM_IDENTITY_FIXTURE_RELEASE="$root/opt/platform/identity/releases/partial" \
+      bash deploy/ssm/deploy-identity.sh --cleanup-fixture >/dev/null
+    [[ ! -e "$root/opt/platform/identity/releases/partial" ]]
+  fi
+done
 
 rollback_boundaries=(current_link release_environment nginx_validation nginx_reload service_restart release_verification health_verification previous_promotion)
 for boundary in "${rollback_boundaries[@]}"; do
