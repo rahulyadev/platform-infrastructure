@@ -46,6 +46,7 @@ grep -Fq 'sha256sum --check --status' deploy/ssm/configure-identity-runtime.sh.t
 grep -Fq 'get-login-password --region ap-south-1 | docker login --username AWS --password-stdin' deploy/ssm/deploy-identity.sh
 grep -Fq "docker image inspect --format '{{.Architecture}}/{{.Os}}'" deploy/ssm/deploy-identity.sh
 grep -Fq -- '--cap-add CHOWN --cap-add FOWNER postgres' deploy/ssm/deploy-identity.sh
+grep -Fq 'run --rm --no-deps --user 999:999 postgres' deploy/ssm/deploy-identity.sh
 grep -Fq 'remove_unactivated_release' deploy/ssm/deploy-identity.sh
 grep -Fq 'stop_preactivation_services' deploy/ssm/deploy-identity.sh
 grep -Fq 'user: "999:999"' config/runtime/identity-compose.yml.tftpl
