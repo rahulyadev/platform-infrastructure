@@ -53,6 +53,8 @@ Secrets are fetched only by exact ARN in the fixed configure document and captur
 The PostgreSQL bootstrap password is staged in a server-only root:999 directory and mounted as one
 read-only file; the separate client directory exposes only the UID/GID-10001 mode-0600 pgpass file to
 the database container. Migrator and runtime passwords are not mounted into PostgreSQL.
+Candidate metadata validation permits that one exact non-root pgpass file and rejects any other
+non-root staged entry or any broader secret-mode exception.
 Configuration holds the same exclusive lifecycle lock as deploy and rollback, stages every
 download, executable, unit, helper, generated file, secret, TLS identity, owner, and mode, and
 validates the complete candidate before an adjacent atomic rename can affect an active path. Its
