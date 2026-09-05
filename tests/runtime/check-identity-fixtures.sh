@@ -44,6 +44,13 @@ if [[ -n "${IDENTITY_TASK003_PACKED_RESULT_OBJECT:-}" ]]; then
     --mount "type=bind,src=$role_temporary/database,dst=/run/secrets/database,readonly" \
     --env POSTGRES_DB=identity --env POSTGRES_USER=identity_bootstrap \
     --env POSTGRES_HOST_AUTH_METHOD=trust "$role_postgres_image" >/dev/null
+  # Do not mistake the entrypoint's temporary initdb server for the final server.
+  # The temporary server can pass pg_isready immediately before its orderly stop.
+  for _ in {1..60}; do
+    if docker logs "$role_fixture" 2>&1 | grep -Fq 'PostgreSQL init process complete; ready for start up.'; then break; fi
+    sleep 1
+  done
+  docker logs "$role_fixture" 2>&1 | grep -Fq 'PostgreSQL init process complete; ready for start up.'
   for _ in {1..60}; do
     if docker exec "$role_fixture" pg_isready --dbname identity --username identity_bootstrap >/dev/null 2>&1; then break; fi
     sleep 1

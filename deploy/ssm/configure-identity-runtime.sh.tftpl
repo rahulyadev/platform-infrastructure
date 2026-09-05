@@ -840,17 +840,24 @@ import os
 import pathlib
 import stat
 import sys
+pgpass = pathlib.Path(sys.argv[1]) / "secrets/database/bootstrap.pgpass"
 for root_name in sys.argv[1:]:
     root = pathlib.Path(root_name)
     for path in root.rglob("*"):
         info = path.lstat()
         if stat.S_ISLNK(info.st_mode) or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
             raise SystemExit(2)
-        if info.st_uid != 0:
+        expected_uid = 10001 if path == pgpass else 0
+        if info.st_uid != expected_uid:
             raise SystemExit(2)
 for path in (pathlib.Path(sys.argv[1]) / "secrets").rglob("*"):
-    if path.is_file() and stat.S_IMODE(path.stat().st_mode) != 0o440:
-        raise SystemExit(2)
+    if path.is_file():
+        info = path.stat()
+        if path == pgpass:
+            if (stat.S_IMODE(info.st_mode), info.st_uid, info.st_gid) != (0o600, 10001, 10001):
+                raise SystemExit(2)
+        elif stat.S_IMODE(info.st_mode) != 0o440 or info.st_uid != 0:
+            raise SystemExit(2)
 PY
 
 configure_stage=CONVERGENCE
