@@ -336,9 +336,9 @@ runtime_password="$(openssl rand -hex 24)"
 redis_password="$(openssl rand -hex 24)"
 repository_cipher="$(openssl rand -hex 24)"
 client_secret="$(openssl rand -hex 32)"
-mkdir -p "$temporary/database" "$temporary/migrator-secret" "$temporary/postgres-client" \
+mkdir -p "$temporary/database" "$temporary/database-server" "$temporary/migrator-secret" "$temporary/postgres-client" \
   "$temporary/redis-secret" "$temporary/redis-client-secret" "$temporary/redis-client-tls" "$temporary/client-secret"
-printf '%s' "$bootstrap_password" >"$temporary/database/bootstrap_password"
+printf '%s' "$bootstrap_password" >"$temporary/database-server/bootstrap_password"
 printf '%s' "$migrator_password" >"$temporary/database/migrator_password"
 printf '%s' "$runtime_password" >"$temporary/database/runtime_password"
 printf '%s' "$migrator_password" >"$temporary/migrator-secret/migrator_password"
@@ -348,10 +348,10 @@ printf '%s' "$client_secret" >"$temporary/client-secret/client_secret"
 printf 'user default off\nuser portfolio_bff reset on >%s ~reference-bff:production:portfolio:identity:* +ping +get +set +getdel +del +eval +client|setinfo\n' "$redis_password" >"$temporary/redis-secret/users.acl"
 cp "$temporary/postgres/ca.crt" "$temporary/postgres-client/ca.crt"
 cp "$temporary/redis/ca.crt" "$temporary/redis-client-tls/ca.crt"
-chmod 0440 "$temporary"/{database,migrator-secret,redis-secret,redis-client-secret,redis-client-tls,client-secret}/* "$temporary/postgres-client/ca.crt"
-chmod 0550 "$temporary"/{database,migrator-secret,redis-secret,redis-client-secret,redis-client-tls,client-secret,postgres-client}
+chmod 0440 "$temporary"/{database,database-server,migrator-secret,redis-secret,redis-client-secret,redis-client-tls,client-secret}/* "$temporary/postgres-client/ca.crt"
+chmod 0550 "$temporary"/{database,database-server,migrator-secret,redis-secret,redis-client-secret,redis-client-tls,client-secret,postgres-client}
 docker run --rm --user 0:0 --mount "type=bind,src=$temporary,dst=/work" --entrypoint /bin/sh "$postgres_image" -c \
-  'chown -R 0:10001 /work/database /work/migrator-secret /work/postgres-client; chown -R 0:999 /work/redis-secret; chown -R 0:10002 /work/redis-client-secret /work/redis-client-tls /work/client-secret'
+  'chown -R 0:10001 /work/database /work/migrator-secret /work/postgres-client; chown -R 0:999 /work/database-server /work/redis-secret; chown -R 0:10002 /work/redis-client-secret /work/redis-client-tls /work/client-secret'
 
 cat >"$temporary/postgres-hba.conf" <<'HBA'
 local all identity_bootstrap trust
@@ -426,7 +426,7 @@ docker run --detach --name "$postgres" --network "$network" --network-alias post
   --mount "type=volume,src=$spool_volume,dst=/var/spool/pgbackrest" \
   --mount "type=volume,src=$postgres_tls_volume,dst=/run/tls/postgres,readonly" \
   --mount "type=bind,src=$temporary/postgres-client,dst=/run/tls/client,readonly" \
-  --mount "type=bind,src=$temporary/database,dst=/run/secrets/database,readonly" \
+  --mount "type=bind,src=$temporary/database-server/bootstrap_password,dst=/run/secrets/database/bootstrap_password,readonly" \
   --mount "type=bind,src=$temporary/postgres-hba.conf,dst=/run/config/postgres-hba.conf,readonly" \
   --env POSTGRES_DB=identity --env POSTGRES_USER=identity_bootstrap \
   --env POSTGRES_PASSWORD_FILE=/run/secrets/database/bootstrap_password \

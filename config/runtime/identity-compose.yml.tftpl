@@ -25,7 +25,8 @@ services:
       - identity_postgres:/var/lib/postgresql
       - identity_postgres_run:/run/postgresql
       - identity_wal_spool:/var/spool/pgbackrest
-      - /etc/platform/identity/secrets/database:/run/secrets/database:ro
+      - /etc/platform/identity/secrets/database-server/bootstrap_password:/run/secrets/database/bootstrap_password:ro
+      - /etc/platform/identity/secrets/database/bootstrap.pgpass:/run/secrets/database/bootstrap.pgpass:ro
       - /etc/platform/identity/tls/postgres-server:/run/tls/postgres:ro
       - /etc/platform/identity/tls/postgres-client/ca.crt:/run/tls/client/ca.crt:ro
       - /etc/platform/identity/postgres-hba.conf:/run/config/postgres-hba.conf:ro

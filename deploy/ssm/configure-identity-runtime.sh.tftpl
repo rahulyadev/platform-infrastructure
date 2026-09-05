@@ -700,7 +700,7 @@ configure_stage=GENERATION_STAGE
 install -d -m 0755 "$staged_generation/secrets" "$staged_generation/tls"
 install -d -m 0750 -o root -g 10002 "$staged_generation/secrets/client" "$staged_generation/secrets/redis-client" "$staged_generation/tls/redis-client"
 install -d -m 0750 -o root -g 10001 "$staged_generation/secrets/database" "$staged_generation/tls/postgres-client"
-install -d -m 0750 -o root -g 999 "$staged_generation/secrets/redis-server" "$staged_generation/tls/redis-server" "$staged_generation/tls/postgres-server"
+install -d -m 0750 -o root -g 999 "$staged_generation/secrets/database-server" "$staged_generation/secrets/redis-server" "$staged_generation/tls/redis-server" "$staged_generation/tls/postgres-server"
 install -d -m 0750 -o root -g 65532 "$staged_generation/secrets/backup"
 
 write_b64gzip '${compose_b64gzip}' "$staged_generation/compose.yml" 0644
@@ -771,7 +771,8 @@ def write(relative, value, gid, mode=0o440):
     with os.fdopen(descriptor, "w", encoding="ascii", newline="") as stream:
         stream.write(value)
 write("secrets/client/client_secret", objects["client"]["client_secret"], 10002)
-for field in ("bootstrap_password", "migrator_password", "runtime_password"):
+write("secrets/database-server/bootstrap_password", objects["database"]["bootstrap_password"], 999)
+for field in ("migrator_password", "runtime_password"):
     write(f"secrets/database/{field}", objects["database"][field], 10001)
 for field, output in (("postgres_ca_crt", "ca.crt"), ("postgres_server_crt", "server.crt"), ("postgres_server_key", "server.key")):
     write(f"tls/postgres-server/{output}", objects["database"][field], 999)
