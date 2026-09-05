@@ -48,6 +48,8 @@ locals {
       pgbackrest_sidecar_b64gzip = base64gzip(file("${path.root}/../../../../config/runtime/pgbackrest-sidecar.sh"))
       docker_service_b64gzip     = base64gzip(file("${path.root}/../../../../config/runtime/docker.service"))
       pgbackrest_passwd_b64gzip  = base64gzip(file("${path.root}/../../../../config/runtime/pgbackrest-passwd"))
+      host_prepare_b64gzip       = base64gzip(file("${path.root}/../../../../deploy/ssm/prepare-identity-host.sh"))
+      host_packages_b64gzip      = base64gzip(file("${path.root}/../../../../config/runtime/identity-host-packages.json"))
       bff_client_secret_arn      = var.identity_bff_client_secret_arn == null ? "" : var.identity_bff_client_secret_arn
       database_secret_arn        = var.identity_database_secret_arn == null ? "" : var.identity_database_secret_arn
       redis_secret_arn           = var.identity_redis_secret_arn == null ? "" : var.identity_redis_secret_arn

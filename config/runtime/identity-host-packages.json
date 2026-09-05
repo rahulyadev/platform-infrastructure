@@ -1,0 +1,198 @@
+{
+  "advisory_review": {
+    "git_fixed_advisory": "ALAS2023-2025-1108",
+    "host_risk_exception": false,
+    "index_sha256": "5b4f82d1b25a62f49ca2a31f12589e5fc6736a5a9361722d332166139dd3c2b7",
+    "index_url": "https://alas.aws.amazon.com/alas2023.html",
+    "other_introduced_source_package_advisories": 0,
+    "reviewed_utc": "2026-09-05T13:56:19Z"
+  },
+  "arch": "aarch64",
+  "install_only": true,
+  "inventory_count": 507,
+  "inventory_sha256": "5fbbb7494e5714d85433b37e63fcd06707775cacc71fc89ddbc166b9ce457724",
+  "kernel": "6.18.41-94.142.amzn2023.aarch64",
+  "keys": [
+    {
+      "path": "/etc/pki/rpm-gpg/RPM-GPG-KEY-amazon-linux-2023",
+      "sha256": "664b632018bd84f9b249be7bd26937c560edb2f2bfc0cbc01ec5a7b4e06aad56"
+    }
+  ],
+  "packages": [
+    {
+      "arch": "aarch64",
+      "bytes": 5297262,
+      "checksum_sha256": "0WvAik3vhymmZaGkY4lILm26HEQKvD9F/YbohRpDcII=",
+      "epoch": 0,
+      "name": "git-core",
+      "nevra": "git-core-0:2.50.1-1.amzn2023.0.1.aarch64",
+      "release": "1.amzn2023.0.1",
+      "repo": "amazonlinux",
+      "scriptlets_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "signature_verified": true,
+      "signing_key_ids": [
+        "d832c631"
+      ],
+      "triggers_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "version": "2.50.1"
+    },
+    {
+      "arch": "aarch64",
+      "bytes": 52976,
+      "checksum_sha256": "G5PRkfG2QP8iIt26UtMeBnsjxJF0/36E52aKkPzZk48=",
+      "epoch": 0,
+      "name": "iptables-legacy",
+      "nevra": "iptables-legacy-0:1.8.8-3.amzn2023.0.2.aarch64",
+      "release": "3.amzn2023.0.2",
+      "repo": "amazonlinux",
+      "scriptlets_sha256": "3e0b3be12c235bb81887d89b6f5b6710d49f034eec42652e92b303b51dafe1bf",
+      "signature_verified": true,
+      "signing_key_ids": [
+        "d832c631"
+      ],
+      "triggers_sha256": "48050ffb514019a8f8351df722bf8754c21c74bd12d17e9e2c56db9876dafcae",
+      "version": "1.8.8"
+    },
+    {
+      "arch": "aarch64",
+      "bytes": 40278,
+      "checksum_sha256": "IgyPodTe+4Rj4Qu84598CmcClHgFYN9DFTK2unNlZMc=",
+      "epoch": 0,
+      "name": "iptables-legacy-libs",
+      "nevra": "iptables-legacy-libs-0:1.8.8-3.amzn2023.0.2.aarch64",
+      "release": "3.amzn2023.0.2",
+      "repo": "amazonlinux",
+      "scriptlets_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "signature_verified": true,
+      "signing_key_ids": [
+        "d832c631"
+      ],
+      "triggers_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "version": "1.8.8"
+    },
+    {
+      "arch": "aarch64",
+      "bytes": 434106,
+      "checksum_sha256": "amFd5fSvMt0aRFXmn7yNYCwECfvmfiUcBLNvyBb9J/0=",
+      "epoch": 0,
+      "name": "iptables-libs",
+      "nevra": "iptables-libs-0:1.8.8-3.amzn2023.0.2.aarch64",
+      "release": "3.amzn2023.0.2",
+      "repo": "amazonlinux",
+      "scriptlets_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "signature_verified": true,
+      "signing_key_ids": [
+        "d832c631"
+      ],
+      "triggers_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "version": "1.8.8"
+    },
+    {
+      "arch": "aarch64",
+      "bytes": 58912,
+      "checksum_sha256": "BvzCmL3QQL3Ei6m52ZJJIZn7OqWji4K2sqhvsZPaa58=",
+      "epoch": 0,
+      "name": "libnetfilter_conntrack",
+      "nevra": "libnetfilter_conntrack-0:1.0.8-2.amzn2023.0.2.aarch64",
+      "release": "2.amzn2023.0.2",
+      "repo": "amazonlinux",
+      "scriptlets_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "signature_verified": true,
+      "signing_key_ids": [
+        "d832c631"
+      ],
+      "triggers_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "version": "1.0.8"
+    },
+    {
+      "arch": "aarch64",
+      "bytes": 30405,
+      "checksum_sha256": "FzLDtYZ3/sfUQx9KYtpCXfZWLppFlvY3GaFtnlPK5/c=",
+      "epoch": 0,
+      "name": "libnfnetlink",
+      "nevra": "libnfnetlink-0:1.0.1-19.amzn2023.0.2.aarch64",
+      "release": "19.amzn2023.0.2",
+      "repo": "amazonlinux",
+      "scriptlets_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "signature_verified": true,
+      "signing_key_ids": [
+        "d832c631"
+      ],
+      "triggers_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "version": "1.0.1"
+    }
+  ],
+  "rationale": {
+    "git-core": "Minimal provider of Git, a documented Docker binary-install prerequisite; no Git server or application source checkout.",
+    "iptables-legacy": "DNF-selected AL2023 provider of iptables and ip6tables required by pinned Docker bridge/NAT networking. No backend override."
+  },
+  "release": "2023.12.20260817",
+  "repository_gpgcheck": true,
+  "repository_sources": [
+    "https://al2023-repos-ap-south-1-de612dc2.s3.dualstack.ap-south-1.amazonaws.com/core/mirrors/2023.12.20260817/aarch64/mirror.list"
+  ],
+  "repository_sslverify": true,
+  "required_commands": [
+    "aws",
+    "base64",
+    "bash",
+    "cmp",
+    "cp",
+    "curl",
+    "cut",
+    "date",
+    "dirname",
+    "find",
+    "findmnt",
+    "flock",
+    "getent",
+    "getenforce",
+    "git",
+    "gzip",
+    "id",
+    "install",
+    "ip",
+    "ip6tables",
+    "iptables",
+    "ldd",
+    "ln",
+    "mkdir",
+    "mktemp",
+    "modinfo",
+    "modprobe",
+    "mv",
+    "nginx",
+    "openssl",
+    "ps",
+    "python3",
+    "readlink",
+    "realpath",
+    "rm",
+    "rmdir",
+    "sed",
+    "sha256sum",
+    "ss",
+    "stat",
+    "systemctl",
+    "systemd-analyze",
+    "tar",
+    "timeout",
+    "tr",
+    "wc",
+    "xfs_info",
+    "xz"
+  ],
+  "required_modules": [
+    "overlay",
+    "br_netfilter",
+    "nf_nat",
+    "nf_conntrack",
+    "iptable_nat",
+    "ip_tables",
+    "ip6_tables"
+  ],
+  "rpm_checksum_encoding": "RFC4648 base64 of the 32 SHA-256 digest bytes",
+  "schema_version": 1,
+  "selinux_config_sha256": "5d09ebeba15dd0dac16a88f4fab9597b349beafa4fbb2ede443306ba0619c21c",
+  "signing_fingerprint": "B21C50FA44A99720EAA72F7FE951904AD832C631"
+}

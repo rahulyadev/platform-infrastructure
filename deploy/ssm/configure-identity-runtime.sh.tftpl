@@ -55,7 +55,7 @@ allowed = {
     "GENERATION_STAGE", "SECRET_FETCH", "SECRET_STAGE", "DATABASE_TLS", "REDIS_TLS",
     "MANUAL_STAGE", "HELPER_SYNTAX", "DOCKER_VERSION", "COMPOSE_VERSION",
     "UNIT_VERIFICATION", "STAGED_METADATA", "CONVERGENCE", "PRE_TRANSACTION",
-    "TRANSACTION", "CLEANUP",
+    "TRANSACTION", "CLEANUP", "HOST_PREREQUISITES",
 }
 if stage not in allowed or not status.isdecimal() or not 1 <= int(status) <= 255:
     raise SystemExit(2)
@@ -396,11 +396,15 @@ readonly unit_verification_root="$work_root/unit-verification"
 configure_stage=WORK_ROOT
 transaction_started=false
 transaction_committed=false
+work_root_owned=false
 previous_generation=""
 docker_was_enabled=false
 stack_was_enabled=false
 docker_was_active=false
 stack_was_active=false
+docker_was_present=false
+stack_was_present=false
+docker_socket_was_present=false
 declare -a active_targets=()
 declare -a created_directories=()
 readonly -a managed_directory_specs=(
@@ -479,52 +483,163 @@ restore_target() {
   label="$(printf '%s' "$target" | sha256sum | cut -d' ' -f1)"
   backup="$work_root/rollback/$label.file"
   temporary="$(dirname -- "$target")/.$(basename -- "$target").identity.$$.next"
-  rm -f -- "$temporary"
+  rm -f -- "$temporary" || return
   if [[ -f "$backup" ]]; then
-    cp --archive -- "$backup" "$temporary"
-    mv -Tf -- "$temporary" "$target"
+    [[ ! -L "$backup" ]] || return 1
+    cp --archive -- "$backup" "$temporary" || return
+    mv -Tf -- "$temporary" "$target" || return
+    [[ -f "$target" && ! -L "$target" ]] || return 1
+    cmp -s -- "$backup" "$target" || return
+    [[ "$(stat -c '%a:%u:%g' "$backup")" == "$(stat -c '%a:%u:%g' "$target")" ]]
   else
-    rm -f -- "$target"
+    [[ -f "$work_root/rollback/$label.absent" && ! -L "$work_root/rollback/$label.absent" ]] || return 1
+    rm -f -- "$target" || return
+    [[ ! -e "$target" && ! -L "$target" ]]
   fi
+}
+
+recovery_step() {
+  local label="$1" status=0
+  shift
+  "$@" >"$work_root/recovery.stdout" 2>"$work_root/recovery.stderr" || status=$?
+  python3 - "$label" "$status" "$work_root/recovery.stdout" "$work_root/recovery.stderr" <<'RECOVERY'
+import hashlib,pathlib,re,sys
+label,status,*paths=sys.argv[1:]
+if not re.fullmatch(r'[A-Z_]+',label) or not status.isdecimal():
+    raise SystemExit(2)
+fields=[f'step={label}',f'status={status}']
+for name,value in zip(('stdout','stderr'),map(lambda p:pathlib.Path(p).read_bytes(),paths)):
+    fields.extend((f'{name}_bytes={len(value)}',f'{name}_lines={len(value.splitlines())}',f'{name}_sha256={hashlib.sha256(value).hexdigest()}'))
+print('IDENTITY_CONFIGURE_RECOVERY '+' '.join(fields),file=sys.stderr)
+RECOVERY
+  return "$status"
+}
+
+stop_new_unit() {
+  local unit="$1" was_active="$2" active load
+  [[ "$was_active" == false ]] || return 0
+  active="$(systemctl show "$unit" --property=ActiveState --value)" || return
+  load="$(systemctl show "$unit" --property=LoadState --value)" || return
+  if [[ "$load" != not-found ]]; then
+    systemctl stop "$unit" || return
+  else
+    [[ "$active" == inactive || "$active" == failed ]] || return 1
+  fi
+  active="$(systemctl show "$unit" --property=ActiveState --value)" || return
+  if [[ "$active" == failed ]]; then systemctl reset-failed "$unit" || return; fi
+  [[ "$(systemctl show "$unit" --property=ActiveState --value)" == inactive ]]
+}
+
+restore_unit_state() {
+  local unit="$1" was_present="$2" was_enabled="$3" was_active="$4" load enabled
+  load="$(systemctl show "$unit" --property=LoadState --value)" || return
+  if [[ "$was_present" == false ]]; then
+    [[ "$was_enabled" == false && "$was_active" == false && "$load" == not-found ]] || return 1
+    # disable after removing an absent unit may fail. Reconcile only our exact link.
+    local link="/etc/systemd/system/multi-user.target.wants/$unit"
+    if [[ -L "$link" ]]; then
+      [[ "$(readlink -- "$link")" == "/etc/systemd/system/$unit" && "$(stat -c '%u:%g' "$link")" == 0:0 ]] || return 1
+      rm -- "$link" || return
+    fi
+    [[ ! -e "$link" && ! -L "$link" && ! -e "/etc/systemd/system/$unit" && ! -L "/etc/systemd/system/$unit" ]] || return 1
+    [[ "$(systemctl show "$unit" --property=ActiveState --value)" == inactive ]]
+    return
+  fi
+  [[ "$load" == loaded ]] || return 1
+  if [[ "$was_enabled" == true ]]; then
+    systemctl enable "$unit" || return
+    [[ "$(systemctl is-enabled "$unit")" == enabled ]] || return 1
+  else
+    systemctl disable "$unit" || return
+    enabled="$(systemctl show "$unit" --property=UnitFileState --value)" || return
+    [[ "$enabled" == disabled ]] || return 1
+  fi
+  if [[ "$was_active" == true ]]; then
+    systemctl start "$unit" || return
+    [[ "$(systemctl show "$unit" --property=ActiveState --value)" == active ]]
+  else
+    [[ "$(systemctl show "$unit" --property=ActiveState --value)" == inactive ]]
+  fi
+}
+
+restore_generation() {
+  if [[ -n "$previous_generation" ]]; then
+    atomic_link "$previous_generation" "$active_generation" || return
+    [[ -L "$active_generation" && "$(readlink -- "$active_generation")" == "$previous_generation" ]]
+  else
+    rm -f -- "$active_generation" || return
+    [[ ! -e "$active_generation" && ! -L "$active_generation" ]]
+  fi
+}
+
+restore_new_socket() {
+  [[ "$docker_socket_was_present" == false ]] || return 0
+  python3 - <<'SOCKET'
+import pathlib,stat
+for path in pathlib.Path('/proc').glob('[0-9]*/comm'):
+    try:
+        name=path.read_text().strip()
+    except FileNotFoundError:
+        continue
+    if name in {'dockerd','containerd','docker-proxy'} or name.startswith('containerd-shim'):
+        raise SystemExit(2)
+for line in pathlib.Path('/proc/net/unix').read_text().splitlines()[1:]:
+    fields=line.split()
+    if len(fields)==8 and fields[7] in {'/run/docker.sock','/var/run/docker.sock'} and fields[3]=='00010000':
+        raise SystemExit(2)
+path=pathlib.Path('/run/docker.sock')
+if path.exists() or path.is_symlink():
+    info=path.lstat()
+    if not stat.S_ISSOCK(info.st_mode) or (info.st_uid,info.st_gid,stat.S_IMODE(info.st_mode))!=(0,0,0o660):
+        raise SystemExit(2)
+    path.unlink()
+if path.exists() or path.is_symlink():
+    raise SystemExit(2)
+SOCKET
 }
 
 restore_transaction() {
   local status=0 index
-  set +e
-  if [[ -n "$previous_generation" ]]; then
-    atomic_link "$previous_generation" "$active_generation" || status=1
-  else
-    rm -f -- "$active_generation" || status=1
-  fi
+  recovery_step STOP_STACK stop_new_unit identity-stack.service "$stack_was_active" || status=1
+  recovery_step STOP_DOCKER stop_new_unit docker.service "$docker_was_active" || status=1
+  # Never remove executable/unit files while a newly started process remains unproved.
+  [[ "$status" == 0 ]] || return "$status"
+  recovery_step GENERATION restore_generation || status=1
   for ((index = $${#active_targets[@]} - 1; index >= 0; index--)); do
-    restore_target "$${active_targets[$index]}" || status=1
+    recovery_step FILE restore_target "$${active_targets[$index]}" || status=1
   done
-  systemctl daemon-reload >/dev/null 2>&1 || status=1
-  if [[ "$docker_was_enabled" == true ]]; then systemctl enable docker.service >/dev/null 2>&1 || status=1; else systemctl disable docker.service >/dev/null 2>&1 || status=1; fi
-  if [[ "$stack_was_enabled" == true ]]; then systemctl enable identity-stack.service >/dev/null 2>&1 || status=1; else systemctl disable identity-stack.service >/dev/null 2>&1 || status=1; fi
-  if [[ "$docker_was_active" == true ]]; then systemctl start docker.service >/dev/null 2>&1 || status=1; else systemctl stop docker.service >/dev/null 2>&1 || status=1; fi
-  if [[ "$stack_was_active" == true ]]; then systemctl start identity-stack.service >/dev/null 2>&1 || status=1; else systemctl stop identity-stack.service >/dev/null 2>&1 || status=1; fi
-  rm -rf -- "$generation" >/dev/null 2>&1 || status=1
+  recovery_step RELOAD systemctl daemon-reload || status=1
+  recovery_step DOCKER restore_unit_state docker.service "$docker_was_present" "$docker_was_enabled" "$docker_was_active" || status=1
+  recovery_step STACK restore_unit_state identity-stack.service "$stack_was_present" "$stack_was_enabled" "$stack_was_active" || status=1
+  recovery_step SOCKET restore_new_socket || status=1
+  [[ "$status" == 0 ]] || return "$status"
+  recovery_step NEW_GENERATION rm -rf -- "$generation" || status=1
   for ((index = $${#created_directories[@]} - 1; index >= 0; index--)); do
-    rmdir -- "$${created_directories[$index]}" >/dev/null 2>&1 || true
+    recovery_step DIRECTORY rmdir -- "$${created_directories[$index]}" || status=1
   done
-  set -e
+  return "$status"
+}
+
+cleanup_staging() {
+  local restoration_status="$1" status=0
+  # Private rollback files may be the only recovery copy: retain them on failed restoration.
+  find "$work_root" -maxdepth 1 -type f -delete || status=1
+  rm -rf -- "$work_root/docker" "$staged_generation" "$work_root/active" "$unit_verification_root" || status=1
+  if [[ "$restoration_status" == 0 ]]; then rm -rf -- "$work_root/rollback" || status=1; fi
+  [[ ! -e "$staged_generation" && ! -e "$work_root/active" && ! -e "$unit_verification_root" ]] || status=1
+  [[ -z "$(find "$work_root" -maxdepth 1 -type f -print -quit)" ]] || status=1
   return "$status"
 }
 
 fail() {
-  local original_status=$?
+  local original_status=$? restoration_status=0 cleanup_status=0
   trap - ERR
   report_configure_failure "$configure_stage" "$original_status" - -
   if [[ "$transaction_started" == true && "$transaction_committed" == false ]]; then
-    if ! restore_transaction; then
-      printf 'Identity runtime configuration failed and prior host restoration failed.\n' >&2
-      exit 1
-    fi
+    restore_transaction || restoration_status=$?
   fi
-  find "$work_root" -maxdepth 1 -type f -delete >/dev/null 2>&1 || true
-  rm -rf -- "$work_root/docker" "$staged_generation" "$work_root/active" "$work_root/rollback" "$unit_verification_root" >/dev/null 2>&1 || true
-  printf 'Identity runtime configuration failed safely.\n' >&2
+  if [[ "$work_root_owned" == true ]]; then cleanup_staging "$restoration_status" || cleanup_status=$?; fi
+  printf 'IDENTITY_CONFIGURE_OUTCOME original_status=%s restoration_status=%s cleanup_status=%s\n' "$original_status" "$restoration_status" "$cleanup_status" >&2
   exit "$original_status"
 }
 trap fail ERR
@@ -534,8 +649,14 @@ if [[ -e "$work_root" || -L "$work_root" ]]; then
 else
   install -d -m 0700 "$work_root"
 fi
-find "$work_root" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+[[ -z "$(find "$work_root" -mindepth 1 -maxdepth 1 -print -quit)" ]]
+work_root_owned=true
 install -d -m 0700 "$staged_generation" "$staged_generation/secrets" "$staged_generation/tls" "$work_root/active" "$work_root/rollback"
+
+configure_stage=HOST_PREREQUISITES
+write_b64gzip '${host_prepare_b64gzip}' "$work_root/host-prepare" 0755
+write_b64gzip '${host_packages_b64gzip}' "$work_root/host-packages.json" 0600
+bash "$work_root/host-prepare" --verify "$work_root/host-packages.json"
 
 download_verified() {
   local url="$1" expected="$2" destination="$3" temporary="$3.part"
@@ -800,13 +921,24 @@ if systemctl is-active --quiet identity-stack.service; then
   exit 1
 fi
 
-for specification in "$${managed_directory_specs[@]}"; do
-  directory="$${specification%:*}"
-  mode="$${specification##*:}"
-  register_directory "$directory" "$mode"
-done
-
 if [[ -L "$active_generation" ]]; then previous_generation="$(readlink -- "$active_generation")"; elif [[ -e "$active_generation" ]]; then exit 1; fi
+if [[ -e /run/docker.sock || -L /run/docker.sock ]]; then
+  [[ -S /run/docker.sock && ! -L /run/docker.sock && "$(stat -c '%a:%u:%g' /run/docker.sock)" == 660:0:0 ]]
+  docker_socket_was_present=true
+fi
+for unit in docker.service identity-stack.service; do
+  load="$(systemctl show "$unit" --property=LoadState --value)"
+  active="$(systemctl show "$unit" --property=ActiveState --value)"
+  [[ "$active" == active || "$active" == inactive ]]
+  if [[ "$load" == loaded ]]; then
+    [[ "$(systemctl show "$unit" --property=FragmentPath --value)" == "/etc/systemd/system/$unit" ]]
+    [[ -f "/etc/systemd/system/$unit" && ! -L "/etc/systemd/system/$unit" ]]
+    if [[ "$unit" == docker.service ]]; then docker_was_present=true; else stack_was_present=true; fi
+  else
+    [[ "$load" == not-found && "$active" == inactive ]]
+    [[ ! -e "/etc/systemd/system/multi-user.target.wants/$unit" && ! -L "/etc/systemd/system/multi-user.target.wants/$unit" ]]
+  fi
+done
 systemctl is-enabled --quiet docker.service 2>/dev/null && docker_was_enabled=true || true
 systemctl is-enabled --quiet identity-stack.service 2>/dev/null && stack_was_enabled=true || true
 systemctl is-active --quiet docker.service && docker_was_active=true || true
@@ -818,6 +950,11 @@ done
 
 configure_stage=TRANSACTION
 transaction_started=true
+for specification in "$${managed_directory_specs[@]}"; do
+  directory="$${specification%:*}"
+  mode="$${specification##*:}"
+  register_directory "$directory" "$mode"
+done
 mv -- "$staged_generation" "$generation"
 for source in "$${staged_files[@]}"; do
   target="/$${source#"$work_root/active/"}"

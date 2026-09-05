@@ -401,12 +401,12 @@ check_identity_document_bounds() {
   local configure_file="$3"
   local verify_file="$4"
 
-  require_count 12 'base64gzip[(]' "$runtime_identity_file" \
-    "configure payloads must use exactly twelve OpenTofu base64gzip expressions"
+  require_count 14 'base64gzip[(]' "$runtime_identity_file" \
+    "configure payloads must use exactly fourteen OpenTofu base64gzip expressions"
   reject 'base64encode[(]' "$runtime_identity_file" \
     "configure payloads must not restore uncompressed base64 encoding"
-  require_count 12 '^write_b64gzip '\''\$\{[a-z_]+_b64gzip\}'\''' "$configure_file" \
-    "configure must decode exactly twelve compressed embedded payloads"
+  require_count 14 '^write_b64gzip '\''\$\{[a-z_]+_b64gzip\}'\''' "$configure_file" \
+    "configure must decode exactly fourteen compressed embedded payloads"
   require_fixed "$configure_file" 'write_b64gzip() {' \
     "configure must retain the fixed compressed-payload writer"
   require_fixed "$configure_file" 'expected_metadata="$${mode#0}:$(id -u):$(id -g)"' \

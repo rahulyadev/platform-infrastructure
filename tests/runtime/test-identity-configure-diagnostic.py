@@ -150,7 +150,7 @@ def test_failure_observation() -> None:
         "lost-status": ('    [[ ! -e "$verification_root" && ! -L "$verification_root" ]]\n    exit "$status"',
                         '    [[ ! -e "$verification_root" && ! -L "$verification_root" ]]\n    exit 0'),
         "suppressed-observation": ('      report_configure_failure "$verification_stage" "$status" "$verification_stdout" "$verification_stderr"', '      :'),
-        "forged-hash": ('hashlib.sha256(value).hexdigest()', 'hashlib.sha256(b"forged").hexdigest()'),
+        "forged-hash": ('f"{label}_sha256={hashlib.sha256(value).hexdigest()}"', 'f"{label}_sha256={hashlib.sha256(b\'forged\').hexdigest()}"'),
     }
     for name, (before, after) in mutations.items():
         assert source.count(before) == 1
