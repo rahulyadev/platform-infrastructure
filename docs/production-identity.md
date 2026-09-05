@@ -68,8 +68,15 @@ a reverse byte proof preserve every argument, dependency, directive, and other b
 executable must remain a real non-symlink executable with exact metadata before unfiltered
 `systemd-analyze --recursive-errors=yes verify` runs on the copies. Base-OS commands and dependency
 units therefore resolve from the real host; no partial alternate root, live placeholder, bind
-mount, or installed-unit rewrite is involved. The private copies and diagnostics are removed for
-both success and failure. Configuration retains the prior generation and exact global objects
+mount, or installed-unit rewrite is involved. Before failure cleanup, the verifier emits one fixed
+stage/status envelope with the byte counts, line counts, and SHA-256 of its non-secret stdout and
+stderr captures. It disables the inherited transaction error handler inside its subshell so that
+the evidence is measured before removal, and propagates the real failure status. Other configure
+stages emit fixed stage/status codes without capturing secret values or arbitrary command output.
+The private copies and captures are removed for both success and failure. A source-derived,
+zero-secret diagnostic compares both recursive modes using canonical units and synthetic commands;
+its rendered shell is exercised locally through success and failure cleanup before host use.
+Configuration retains the prior generation and exact global objects
 until success, restores all of them on any
 failure, and removes raw staging material. An identical rerun is a no-op without a service stop or
 restart only when every managed parent is a real root-owned/root-group directory at its reviewed

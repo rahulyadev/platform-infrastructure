@@ -300,7 +300,14 @@ try:
         ("identity-stack.service", "ExecStop", "/usr/local/lib/docker/cli-plugins/docker-compose"),
     )
     required = (
-        'trap \'rm -rf -- "$verification_root"\' EXIT',
+        '  trap - ERR',
+        '  trap finish_unit_verification EXIT',
+        '    local status=$?',
+        '      report_configure_failure "$verification_stage" "$status" "$verification_stdout" "$verification_stderr"',
+        '    rm -rf -- "$verification_root"',
+        '    exit "$status"',
+        '  verification_stage=UNIT_TRANSFORM',
+        '  verification_stage=UNIT_SYSTEMD',
         '    >"$verification_root/transform.stdout" \\',
         '    2>"$verification_root/transform.stderr" <<\'PY\'',
         '"docker.service": gzip.decompress(base64.b64decode(sys.argv[5], validate=True))',
@@ -345,6 +352,12 @@ try:
         and source.count(production_call) == 1
         and source.count("--unit-verification-fixture") == 1
         and source.index(production_call) < source.index("transaction_started=true")
+        and verifier.index('      report_configure_failure ') < verifier.index('    rm -rf -- "$verification_root"') < verifier.index('    exit "$status"')
+        and source.count('report_configure_failure "$configure_stage" "$original_status" - -') == 1
+        and 'f"{label}_sha256={hashlib.sha256(value).hexdigest()}"' in source
+        and 'f"{label}_lines={len(value.splitlines())}"' in source
+        and 'f"{label}_bytes={len(value)}"' in source
+        and 'if stage not in allowed or not status.isdecimal() or not 1 <= int(status) <= 255:' in source
     )
 except (OSError, UnicodeError, ValueError, SyntaxError):
     valid = False

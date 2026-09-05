@@ -12,6 +12,7 @@ trap 'rm -rf -- "$temporary"' EXIT
 
 PYTHONPYCACHEPREFIX="$temporary/pycache" python3 -m py_compile config/runtime/identity-launcher.py
 python3 tests/runtime/verify-identity-contract.py .
+python3 tests/runtime/test-identity-configure-diagnostic.py
 bash tests/runtime/check-identity-mutations.sh
 
 oidc_root="$temporary/oidc"

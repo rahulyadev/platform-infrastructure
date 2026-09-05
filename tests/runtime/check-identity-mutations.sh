@@ -142,7 +142,18 @@ assert_unit_verification_failure() {
     exit 1
   fi
   [[ ! -e "$fixture_root/verification" && ! -L "$fixture_root/verification" ]]
-  [[ ! -s "$temporary/output" ]]
+  python3 - "$temporary/output" <<'PY'
+import pathlib
+import re
+import sys
+
+line = pathlib.Path(sys.argv[1]).read_text()
+pattern = (r"IDENTITY_CONFIGURE_FAILURE stage=UNIT_TRANSFORM status=[1-9][0-9]*"
+           r" stdout_bytes=[0-9]+ stdout_lines=[0-9]+ stdout_sha256=[0-9a-f]{64}"
+           r" stderr_bytes=[0-9]+ stderr_lines=[0-9]+ stderr_sha256=[0-9a-f]{64}\n")
+if re.fullmatch(pattern, line) is None:
+    raise SystemExit("Identity failure observation must be one fixed value-free envelope.")
+PY
   rm -f -- "$temporary/output"
 }
 

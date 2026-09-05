@@ -365,7 +365,14 @@ expected_unit_mapping = (
 )
 require(unit_mapping == expected_unit_mapping)
 for fixed in (
-    'trap \'rm -rf -- "$verification_root"\' EXIT',
+    '  trap - ERR',
+    '  trap finish_unit_verification EXIT',
+    '    local status=$?',
+    '      report_configure_failure "$verification_stage" "$status" "$verification_stdout" "$verification_stderr"',
+    '    rm -rf -- "$verification_root"',
+    '    exit "$status"',
+    '  verification_stage=UNIT_TRANSFORM',
+    '  verification_stage=UNIT_SYSTEMD',
     '    >"$verification_root/transform.stdout" \\',
     '    2>"$verification_root/transform.stderr" <<\'PY\'',
     '"docker.service": gzip.decompress(base64.b64decode(sys.argv[5], validate=True))',
@@ -419,6 +426,19 @@ require(
     < configure.index("transaction_started=true")
 )
 require(configure.count("--unit-verification-fixture") == 1)
+require(
+    unit_verifier.index('      report_configure_failure ')
+    < unit_verifier.index('    rm -rf -- "$verification_root"')
+    < unit_verifier.index('    exit "$status"')
+)
+for fixed in (
+    'report_configure_failure "$configure_stage" "$original_status" - -',
+    'f"{label}_sha256={hashlib.sha256(value).hexdigest()}"',
+    'f"{label}_lines={len(value.splitlines())}"',
+    'f"{label}_bytes={len(value)}"',
+    'if stage not in allowed or not status.isdecimal() or not 1 <= int(status) <= 255:',
+):
+    require(configure.count(fixed) == 1)
 for purpose_path in ("secrets/redis-server", "secrets/redis-client", "tls/redis-server", "tls/redis-client", "tls/postgres-server", "tls/postgres-client"):
     require(purpose_path in configure)
 
