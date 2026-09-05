@@ -6,7 +6,7 @@ set +x
 
 test_root="${PLATFORM_IDENTITY_LIFECYCLE_TEST_ROOT:-}"
 if [[ -n "$test_root" ]]; then
-  [[ "${1:-}" == --activation-fixture ]]
+  [[ "${1:-}" == --activation-fixture || "${1:-}" == --cleanup-fixture ]]
   [[ "$test_root" == /tmp/* && -d "$test_root" && ! -L "$test_root" ]]
   [[ "$test_root" == "$(realpath -e -- "$test_root")" ]]
 else
@@ -40,6 +40,8 @@ transaction=""
 prior_service_active=false
 recovery_info=""
 recovery_metadata=""
+release=""
+release_created=false
 
 inject_failure() {
   if [[ -n "$test_root" && "${PLATFORM_IDENTITY_FAIL_AT:-}" == "$1" ]]; then
@@ -140,15 +142,42 @@ restore_prior_release() {
   return "$status"
 }
 
+remove_unactivated_release() {
+  local link name expected_owner=0:0
+  [[ -z "$test_root" ]] || expected_owner="$(id -u):$(id -g)"
+  [[ "$release_created" == true && -n "$release" ]] || return 0
+  [[ "$release" == "$releases"/* && -d "$release" && ! -L "$release" ]] || return
+  for link in "$current" "$previous"; do
+    if [[ -L "$link" ]]; then
+      [[ "$(readlink -f -- "$link")" != "$release" ]] || return
+    else
+      [[ ! -e "$link" ]] || return
+    fi
+  done
+  [[ -z "$(find "$release" -mindepth 1 -maxdepth 1 ! -name compose.yml ! -name release.env -print -quit)" ]] || return
+  for name in compose.yml release.env; do
+    if [[ -e "$release/$name" || -L "$release/$name" ]]; then
+      [[ -f "$release/$name" && ! -L "$release/$name" && "$(stat -c '%u:%g' "$release/$name")" == "$expected_owner" ]] || return
+      if [[ "$name" == compose.yml ]]; then [[ "$(stat -c '%a' "$release/$name")" == 644 ]] || return; else [[ "$(stat -c '%a' "$release/$name")" == 600 ]] || return; fi
+      rm -- "$release/$name" || return
+    fi
+  done
+  rmdir -- "$release" || return
+  [[ ! -e "$release" && ! -L "$release" ]] || return
+  release_created=false
+}
+
 on_error() {
-  local original_status=$?
+  local original_status=$? recovery_status=0
   trap - ERR
   deployment_failed_metric
   if [[ "$activation_started" == true && "$activation_committed" == false ]]; then
-    if ! restore_prior_release; then
-      printf 'Identity deployment failed and prior health restoration failed.\n' >&2
-      exit 1
-    fi
+    restore_prior_release || recovery_status=1
+  fi
+  remove_unactivated_release || recovery_status=1
+  if [[ "$recovery_status" != 0 ]]; then
+    printf 'Identity deployment failed and exact prior-state recovery failed.\n' >&2
+    exit 1
   fi
   printf 'Identity deployment failed; the prior healthy release was restored.\n' >&2
   exit "$original_status"
@@ -216,6 +245,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
+if [[ -n "$test_root" && "$1" == --cleanup-fixture ]]; then
+  release="${PLATFORM_IDENTITY_FIXTURE_RELEASE:?fixture release required}"
+  release_created=true
+  remove_unactivated_release
+  printf 'Identity pre-activation cleanup fixture completed.\n'
+  exit 0
+fi
+
 if [[ -n "$test_root" ]]; then
   readonly fixture_release="${PLATFORM_IDENTITY_FIXTURE_RELEASE:?fixture release required}"
   activate_release "$fixture_release"
@@ -244,22 +281,31 @@ readonly cognito_client_id="${SSM_clientId:?clientId parameter required}"
 release="$releases/$release_id"
 [[ ! -e "$release" && ! -L "$release" ]]
 install -d -m 0755 "$release"
+release_created=true
 install -m 0644 "$generation/compose.yml" "$release/compose.yml"
 printf 'IDENTITY_API_IMAGE=%s\nIDENTITY_BFF_IMAGE=%s\nIDENTITY_RELEASE_ID=%s\nCOGNITO_ISSUER=%s\nCOGNITO_JWKS_URL=%s\nCOGNITO_CLIENT_ID=%s\nIDENTITY_SCHEMA_HEAD=%s\nIDENTITY_ORIGIN=https://identity.rahuly.in\nBFF_ORIGIN=https://rahuly.in\nAUTHORIZATION_ENDPOINT=https://auth.rahuly.in/oauth2/authorize\nTOKEN_ENDPOINT=https://auth.rahuly.in/oauth2/token\nOAUTH_RESOURCE=identity-service://api\nREDIS_KEY_NAMESPACE=reference-bff:production:portfolio:identity\n' \
   "$api_image" "$bff_image" "$release_id" "$cognito_issuer" "$cognito_jwks_url" "$cognito_client_id" "$schema_head" >"$release/release.env"
 chmod 0600 "$release/release.env"
 
-aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin "$ecr_registry" >/dev/null
 export IDENTITY_API_IMAGE="$api_image" IDENTITY_BFF_IMAGE="$bff_image"
 export COGNITO_ISSUER="$cognito_issuer" COGNITO_JWKS_URL="$cognito_jwks_url" COGNITO_CLIENT_ID="$cognito_client_id"
-docker pull "$api_image" >/dev/null
-docker pull "$bff_image" >/dev/null
+images_missing=false
+for image in "$api_image" "$bff_image"; do
+  if ! docker image inspect "$image" >/dev/null 2>&1; then images_missing=true; fi
+done
+if [[ "$images_missing" == true ]]; then
+  aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin "$ecr_registry" >/dev/null
+  for image in "$api_image" "$bff_image"; do
+    if ! docker image inspect "$image" >/dev/null 2>&1; then docker pull "$image" >/dev/null; fi
+  done
+fi
 for image in "$api_image" "$bff_image"; do
   [[ "$(docker image inspect --format '{{.Architecture}}/{{.Os}}' "$image")" == arm64/linux ]]
   docker image inspect --format '{{join .RepoDigests "\n"}}' "$image" | grep -Fxq "$image"
 done
 
-docker compose --file "$release/compose.yml" --project-name identity-production run --rm --no-deps --user root postgres \
+docker compose --file "$release/compose.yml" --project-name identity-production run --rm --no-deps --user root \
+  --cap-add CHOWN --cap-add FOWNER postgres \
   sh -c 'chown 999:999 /run/postgresql /var/spool/pgbackrest && chmod 0770 /run/postgresql /var/spool/pgbackrest'
 docker compose --file "$release/compose.yml" --project-name identity-production up --detach --wait postgres redis
 docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY \

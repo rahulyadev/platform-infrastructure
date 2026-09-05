@@ -396,11 +396,20 @@ docker run --rm --user 0:0 \
   --mount "type=volume,src=$repository_volume,dst=/repository" \
   --mount "type=volume,src=$restore_volume,dst=/restore" \
   --entrypoint /bin/sh "$postgres_image" -c 'chown 2001:2001 /repository /restore && chmod 0700 /repository /restore'
-docker run --rm --user 0:0 \
+if docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --mount "type=volume,src=$socket_volume,dst=/socket" \
+  --mount "type=volume,src=$spool_volume,dst=/spool" \
+  --entrypoint /bin/sh "$postgres_image" -c 'chown 999:999 /socket /spool'; then
+  printf 'Identity volume preparation succeeded without its two bounded capabilities.\n' >&2
+  exit 1
+fi
+docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --cap-add CHOWN --cap-add FOWNER \
+  --security-opt no-new-privileges \
   --mount "type=volume,src=$socket_volume,dst=/socket" \
   --mount "type=volume,src=$spool_volume,dst=/spool" \
   --entrypoint /bin/sh "$postgres_image" -c 'chown 999:999 /socket /spool && chmod 0770 /socket /spool'
-docker run --rm --user 0:0 \
+docker run --rm --network none --user 0:0 --read-only --cap-drop ALL --cap-add CHOWN --cap-add FOWNER \
+  --security-opt no-new-privileges \
   --mount "type=volume,src=$restore_socket_volume,dst=/socket" \
   --mount "type=volume,src=$restore_spool_volume,dst=/spool" \
   --entrypoint /bin/sh "$postgres_image" -c 'chown 999:999 /socket /spool && chmod 0770 /socket /spool'
