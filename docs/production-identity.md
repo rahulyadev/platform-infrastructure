@@ -82,7 +82,9 @@ failure, and removes raw staging material. An identical rerun is a no-op without
 restart only when every managed parent is a real root-owned/root-group directory at its reviewed
 mode and every active binary, helper, unit, and enablement link or file has its exact type,
 root ownership, mode, and content; metadata drift is not silently repaired while the workload is
-active. A host-global binary or unit upgrade while Identity is active fails before any active
+active. Directory checks remove only the declaration's leading octal zero before comparing with
+`stat %a`; declarations `0755` and `0700` therefore match their exact `755` and `700` metadata.
+Ownership, group, directory type and non-symlink requirements remain exact. A host-global binary or unit upgrade while Identity is active fails before any active
 write. Secret files are root-owned, single-service-group-readable files selected by one atomic
 generation symlink. PostgreSQL clients require TCP with
 `sslmode=verify-full`. The BFF constructs a process-local public/private CA bundle in tmpfs and

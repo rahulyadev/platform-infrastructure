@@ -124,6 +124,10 @@ direct unit-syntax failures, including the inherited transaction ERR-handler ord
 mutations reject early cleanup, lost exit status, suppressed observation and forged hashes. The
 source-derived diagnostic is JSON-round-tripped and executed under Bash with synthetic commands
 through transformation, both actual recursive modes, and success/failure cleanup.
+The global-directory predicate normalizes only the declared leading octal zero before comparing
+with `stat %a`. A disposable root-owned fixture uses the existing pinned PostgreSQL image to
+prove both `0755` and `0700`, reject wrong modes/owners/groups and symlink/file/absent paths, and
+independently reject restored string-comparison and ignored-owner mutations.
 
 Every payload embedded in the Identity configure document is produced with
 OpenTofu `base64gzip`, decoded through the fixed base64/gzip pipeline into a

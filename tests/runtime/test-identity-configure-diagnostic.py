@@ -162,12 +162,76 @@ def test_failure_observation() -> None:
             raise AssertionError("Failure-observation mutation was not detected: " + name)
 
 
+def test_directory_metadata() -> None:
+    source = (REPOSITORY / "deploy/ssm/configure-identity-runtime.sh.tftpl").read_text()
+    start = source.index("directory_exact() {")
+    end = source.index("\n}\n", start) + 3
+    function = source[start:end].replace("$${", "${")
+    # This is the existing runtime fixture image, with no new image or dependency.
+    image = json.loads((REPOSITORY / "config/runtime/identity-images.json").read_text())["postgres"]["image"]
+    fixture = '''
+set -Eeuo pipefail
+umask 077
+root="$(mktemp -d /tmp/platform-identity-directory.XXXXXX)"
+trap 'rm -rf -- "$root"' EXIT
+candidate="$root/candidate"
+must_reject() {
+  if directory_exact "$1" "$2"; then exit 9; fi
+}
+install -d -m 0755 "$candidate"
+directory_exact "$candidate" 0755
+printf 'DECLARED_0755=PASS\n'
+chmod 0700 "$candidate"
+directory_exact "$candidate" 0700
+printf 'DECLARED_0700=PASS\n'
+chmod 0750 "$candidate"
+must_reject "$candidate" 0755
+printf 'WRONG_MODE=REJECTED\n'
+chmod 0755 "$candidate"
+chown 1:0 "$candidate"
+must_reject "$candidate" 0755
+chown 0:1 "$candidate"
+must_reject "$candidate" 0755
+chown 0:0 "$candidate"
+printf 'WRONG_OWNER_GROUP=REJECTED\n'
+ln -s "$candidate" "$root/symlink"
+must_reject "$root/symlink" 0755
+install -m 0755 /dev/null "$root/file"
+must_reject "$root/file" 0755
+must_reject "$root/absent" 0755
+printf 'SYMLINK_FILE_ABSENT=REJECTED\n'
+'''
+    expected = ("DECLARED_0755=PASS\nDECLARED_0700=PASS\nWRONG_MODE=REJECTED\n"
+                "WRONG_OWNER_GROUP=REJECTED\nSYMLINK_FILE_ABSENT=REJECTED\n")
+    arguments = ["docker", "run", "--rm", "--network", "none", "--read-only", "--user", "0:0",
+                 "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "FOWNER",
+                 "--security-opt", "no-new-privileges", "--tmpfs", "/tmp:rw,nosuid,nodev",
+                 "--interactive", "--entrypoint", "/bin/bash", image, "-s"]
+    result = subprocess.run(arguments, input=function + fixture, text=True, capture_output=True)
+    assert result.returncode == 0 and not result.stderr and result.stdout == expected, json.dumps({
+        "fixture": "declared-directory-mode", "status": result.returncode,
+        "stdout_bytes": len(result.stdout), "stderr_sha256": hashlib.sha256(result.stderr.encode()).hexdigest()})
+    assert "${mode#0}" in function
+    for name, mutant in (
+        ("leading-zero-string-comparison", function.replace("${mode#0}", "$mode")),
+        ("ignored-owner", function.replace(":0:0", ":$(stat -c '%u:%g' \"$directory\")")),
+    ):
+        rejected = subprocess.run(arguments, input=mutant + fixture, text=True, capture_output=True)
+        assert rejected.returncode != 0 or rejected.stdout != expected
+        print(json.dumps({"directory_mutation": name, "rejected": True}))
+    print(json.dumps({"fixture": "declared-directory-modes", "root_owner_group_mode_type": "PASS"}))
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--render", action="store_true")
+    parser.add_argument("--directory-fixture", action="store_true")
     args = parser.parse_args()
     if args.render:
         print(render(), end="")
+    elif args.directory_fixture:
+        test_directory_metadata()
     else:
         test_rendered()
         test_failure_observation()
+        test_directory_metadata()
