@@ -13,6 +13,7 @@ trap 'rm -rf -- "$temporary"' EXIT
 PYTHONPYCACHEPREFIX="$temporary/pycache" python3 -m py_compile config/runtime/identity-launcher.py
 python3 tests/runtime/verify-identity-contract.py .
 python3 tests/runtime/test-identity-configure-diagnostic.py
+bash tests/runtime/check-identity-host-prerequisites.sh
 bash tests/runtime/check-identity-mutations.sh
 
 oidc_root="$temporary/oidc"
@@ -165,6 +166,8 @@ locals {
     pgbackrest_sidecar = file("${var.repository_root}/config/runtime/pgbackrest-sidecar.sh")
     docker_service     = file("${var.repository_root}/config/runtime/docker.service")
     pgbackrest_passwd  = file("${var.repository_root}/config/runtime/pgbackrest-passwd")
+    host_prepare      = file("${var.repository_root}/deploy/ssm/prepare-identity-host.sh")
+    host_packages     = file("${var.repository_root}/config/runtime/identity-host-packages.json")
   }
   configure = templatefile("${var.repository_root}/deploy/ssm/configure-identity-runtime.sh.tftpl", {
     docker_version              = local.identity_image_contract.docker.version
@@ -185,11 +188,14 @@ locals {
     pgbackrest_sidecar_b64gzip  = base64gzip(local.payloads.pgbackrest_sidecar)
     docker_service_b64gzip      = base64gzip(local.payloads.docker_service)
     pgbackrest_passwd_b64gzip   = base64gzip(local.payloads.pgbackrest_passwd)
+    host_prepare_b64gzip       = base64gzip(local.payloads.host_prepare)
+    host_packages_b64gzip      = base64gzip(local.payloads.host_packages)
     bff_client_secret_arn       = "arn:example:client"
     database_secret_arn         = "arn:example:database"
     redis_secret_arn            = "arn:example:redis"
     backup_secret_arn           = "arn:example:backup"
   })
+  __DOCUMENT_COMMANDS__
   document = jsonencode({
     schemaVersion = "2.2"
     description   = "Reviewed fixed configure Identity production operation"
@@ -199,12 +205,13 @@ locals {
       name   = "identityConfigure"
       inputs = {
         timeoutSeconds = "3600"
-        runCommand     = [local.configure]
+        runCommand     = [local.document_commands["configure"]]
       }
     }]
   })
   proof = jsonencode({
     document_base64 = base64encode(local.document)
+    configure_base64 = base64encode(local.configure)
     payloads = {
       for key, plain in local.payloads : key => {
         plain      = base64encode(plain)
@@ -215,6 +222,17 @@ locals {
 }
 HCL
 
+python3 - "$render_root/main.tf" infra/modules/identity_production/documents.tf <<'PY'
+import pathlib,re,sys
+fixture,production=map(pathlib.Path,sys.argv[1:])
+source=production.read_text()
+match=re.search(r'^  document_commands = \{\n.*?^  \}',source,re.M|re.S)
+if not match or source.count('document_commands = {') != 1:
+    raise SystemExit('Identity document wrapper extraction failed safely.')
+block=match[0].replace('local.rendered_document_scripts','{ configure = local.configure }')
+fixture.write_text(fixture.read_text().replace('  __DOCUMENT_COMMANDS__',block))
+PY
+
 TF_DATA_DIR="$temporary/tofu-data" tofu -chdir="$render_root" init -backend=false -input=false -no-color >/dev/null
 TF_DATA_DIR="$temporary/tofu-data" TF_VAR_repository_root="$repository_root" \
   tofu -chdir="$render_root" console -no-color <<<'base64encode(local.proof)' >"$temporary/proof.console"
@@ -224,6 +242,7 @@ import base64
 import gzip
 import json
 import pathlib
+import re
 import sys
 
 proof = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
@@ -236,7 +255,12 @@ document = json.loads(document_text)
 command = document["mainSteps"][0]["inputs"]["runCommand"]
 if len(command) != 1 or document["parameters"] != {}:
     raise SystemExit("Rendered Identity SSM document shape drifted.")
-pathlib.Path(sys.argv[2]).write_text(command[0], encoding="utf-8")
+canonical=base64.b64decode(proof['configure_base64'],validate=True)
+encoded=re.findall(r"printf '%s' '([A-Za-z0-9+/=]+)' \| base64 --decode \| gzip --decompress",command[0])
+if len(encoded)!=1 or gzip.decompress(base64.b64decode(encoded[0],validate=True))!=canonical:
+    raise SystemExit('Identity document compression changed canonical script bytes.')
+pathlib.Path(sys.argv[2]).write_bytes(canonical)
+pathlib.Path(sys.argv[2]+'.wrapper').write_text(command[0],encoding='utf-8')
 for value in proof["payloads"].values():
     plain = base64.b64decode(value["plain"], validate=True)
     packed = base64.b64decode(value["compressed"], validate=True)
@@ -245,6 +269,8 @@ for value in proof["payloads"].values():
 PY
 chmod 0700 "$temporary/rendered-configure.sh"
 bash -n "$temporary/rendered-configure.sh"
+bash -n "$temporary/rendered-configure.sh.wrapper"
+python3 tests/runtime/test-identity-host-recovery.py --wrapper "$temporary/rendered-configure.sh.wrapper"
 
 payload_root="$temporary/compressed-payload"
 install -d -m 0700 "$payload_root"

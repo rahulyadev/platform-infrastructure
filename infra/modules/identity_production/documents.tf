@@ -115,6 +115,30 @@ locals {
     }
   }
 
+  document_commands = {
+    for key, script in local.rendered_document_scripts : key => key == "configure" ? <<-COMMAND
+      #!/usr/bin/env bash
+      set -Eeuo pipefail
+      umask 077
+      set +x
+      payload_root="$(mktemp -d /tmp/platform-identity-document.XXXXXX)"
+      finish_document() {
+        status=$?
+        trap - EXIT
+        [[ "$payload_root" == /tmp/platform-identity-document.* && -d "$payload_root" && ! -L "$payload_root" ]]
+        rm -r -- "$payload_root"
+        [[ ! -e "$payload_root" && ! -L "$payload_root" ]]
+        printf 'IDENTITY_DOCUMENT_CLEANUP=PASS status=%s\n' "$status"
+        exit "$status"
+      }
+      trap finish_document EXIT
+      printf '%s' '${base64gzip(script)}' | base64 --decode | gzip --decompress >"$payload_root/configure.sh"
+      printf '%s  %s\n' '${sha256(script)}' "$payload_root/configure.sh" | sha256sum --check --status
+      bash "$payload_root/configure.sh" "$@"
+    COMMAND
+    : script
+  }
+
   rendered_document_contents = {
     for key, document_name in local.document_names : key => jsonencode({
       schemaVersion = "2.2"
@@ -125,7 +149,7 @@ locals {
         name   = "identity${title(key)}"
         inputs = {
           timeoutSeconds = "3600"
-          runCommand     = [local.rendered_document_scripts[key]]
+          runCommand     = [local.document_commands[key]]
         }
       }]
     })

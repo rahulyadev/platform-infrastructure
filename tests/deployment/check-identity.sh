@@ -14,9 +14,9 @@ for script in deploy/ssm/*identity*.sh; do bash -n "$script"; done
 bash -n deploy/ssm/configure-identity-runtime.sh.tftpl
 python3 tests/runtime/verify-identity-contract.py . >/dev/null
 
-[[ "$(grep -Fc 'base64gzip(' infra/live/production/runtime/identity.tf)" == 12 ]]
+[[ "$(grep -Fc 'base64gzip(' infra/live/production/runtime/identity.tf)" == 14 ]]
 ! grep -Fq 'base64encode(' infra/live/production/runtime/identity.tf
-[[ "$(grep -Ec '^write_b64gzip '\''\$\{[a-z_]+_b64gzip\}'\''' deploy/ssm/configure-identity-runtime.sh.tftpl)" == 12 ]]
+[[ "$(grep -Ec '^write_b64gzip '\''\$\{[a-z_]+_b64gzip\}'\''' deploy/ssm/configure-identity-runtime.sh.tftpl)" == 14 ]]
 grep -Fq "if ! printf '%s' \"\$encoded\" | base64 --decode | gzip --decompress >\"\$temporary\"; then" \
   deploy/ssm/configure-identity-runtime.sh.tftpl
 grep -Fq 'install -m "$mode" /dev/null "$temporary"' deploy/ssm/configure-identity-runtime.sh.tftpl

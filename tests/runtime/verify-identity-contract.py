@@ -443,7 +443,7 @@ for fixed in (
 for purpose_path in ("secrets/redis-server", "secrets/redis-client", "tls/redis-server", "tls/redis-client", "tls/postgres-server", "tls/postgres-client"):
     require(purpose_path in configure)
 
-require(runtime_identity.count("base64gzip(") == 12)
+require(runtime_identity.count("base64gzip(") == 14)
 require("base64encode(" not in runtime_identity)
 for payload in (
     "compose",
@@ -458,10 +458,12 @@ for payload in (
     "pgbackrest_sidecar",
     "docker_service",
     "pgbackrest_passwd",
+    "host_prepare",
+    "host_packages",
 ):
     require(f"{payload}_b64gzip" in runtime_identity)
     require(f"write_b64gzip '${{{payload}_b64gzip}}'" in configure)
-require(configure.count("write_b64gzip '") == 12)
+require(configure.count("write_b64gzip '") == 14)
 for fixed in (
     "write_b64gzip() {",
     'expected_metadata="$${mode#0}:$(id -u):$(id -g)"',

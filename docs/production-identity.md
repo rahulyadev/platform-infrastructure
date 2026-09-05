@@ -136,3 +136,34 @@ Separate reviewed tasks must supply external DNS readback, Google credentials, r
 Identity application digests and ARM64 manifest proofs, authorization to run the fixed Identity
 TLS operation, and approved apply/deployment windows. This checkpoint performs none of those
 actions.
+# Host prerequisites and recovery
+
+Before configuration, publish and execute `deploy/ssm/prepare-identity-host.sh --prepare`
+with the exact `config/runtime/identity-host-packages.json` on the existing host through SSM.
+The helper shares the lifecycle lock and permits only the pinned, signed, missing AL2023
+package closure from release `2023.12.20260817`. It verifies the pre-existing RPM inventory,
+rejects upgrades/removals/additional transaction members, and makes no package writes when
+the exact closure is already installed. Git is the minimal `git-core` binary prerequisite;
+the package solver selects the AL2023 legacy iptables provider, without installing a firewall
+service or changing Docker's firewall management. Interrupted transactions require observed
+RPM-state reconciliation before installing only the remaining missing members.
+
+The host has SELinux enabled in its pre-existing Permissive mode. It records denials but does
+not enforce mandatory access control. Preparation verifies and preserves that baseline;
+Disabled or unexpected Enforcing/configuration drift is not normalized. No mode, boot,
+label or policy transition occurs. DAC, capabilities, seccomp, no-new-privileges, TLS,
+network/namespace isolation and IAM remain independent required controls.
+
+Preparation reconciles only absent Docker/Identity units, exact dangling enablement links,
+failed unit cache and a proved inactive Docker socket. Docker data and healthy nginx remain
+untouched. It must complete before an SSM document update can automatically configure the host.
+Configuration runs a read-only prerequisite check before fetching any runtime secret.
+
+Configuration restoration stops newly started components before restoring files, distinguishes
+prior unit absence from disabled/inactive and healthy states, and verifies the resulting state.
+Fixed per-step status/count/hash evidence preserves the original failure independently of
+restoration and cleanup. Transient staging is cleaned on failure; protected rollback copies
+are retained when restoration is unproved. A subsequent configuration rejects nonempty staging
+instead of deleting unresolved recovery evidence. Document compression preserves the complete
+rendered script, verifies its SHA-256 before execution, and cleans its private decoder directory
+on both success and failure.
