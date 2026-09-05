@@ -187,6 +187,7 @@ require("lstat()" in launcher and "stat.S_ISREG" in launcher and "path.is_symlin
 require("urllib.parse.quote" in launcher and 'safe=""' in launcher)
 
 for fixed in (
+    'user: "999:999"',
     'user: "10001:10001"',
     'user: "10002:10002"',
     'ports: [127.0.0.1:8081:8080]',

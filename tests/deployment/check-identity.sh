@@ -47,6 +47,8 @@ grep -Fq 'get-login-password --region ap-south-1 | docker login --username AWS -
 grep -Fq "docker image inspect --format '{{.Architecture}}/{{.Os}}'" deploy/ssm/deploy-identity.sh
 grep -Fq -- '--cap-add CHOWN --cap-add FOWNER postgres' deploy/ssm/deploy-identity.sh
 grep -Fq 'remove_unactivated_release' deploy/ssm/deploy-identity.sh
+grep -Fq 'stop_preactivation_services' deploy/ssm/deploy-identity.sh
+grep -Fq 'user: "999:999"' config/runtime/identity-compose.yml.tftpl
 ! grep -Eq -- '--privileged|--cap-add ALL' deploy/ssm/deploy-identity.sh
 [[ "$(grep -Fc 'run --rm migrator' deploy/ssm/deploy-identity.sh)" == 1 ]]
 ! grep -Fq 'migrator check' deploy/ssm/deploy-identity.sh
@@ -333,6 +335,47 @@ for variant in exact unexpected; do
     PLATFORM_IDENTITY_LIFECYCLE_TEST_ROOT="$root" PLATFORM_IDENTITY_FIXTURE_RELEASE="$root/opt/platform/identity/releases/partial" \
       bash deploy/ssm/deploy-identity.sh --cleanup-fixture >/dev/null
     [[ ! -e "$root/opt/platform/identity/releases/partial" ]]
+  fi
+done
+
+for variant in exact stop-failure; do
+  root="$temporary/deploy-service-cleanup-$variant"
+  install -d -m 0755 "$root/run/lock" "$root/opt/platform/identity/releases/partial" "$root/bin"
+  : >"$root/run/lock/platform-identity-lifecycle.lock"
+  chmod 0600 "$root/run/lock/platform-identity-lifecycle.lock"
+  printf 'compose\n' >"$root/opt/platform/identity/releases/partial/compose.yml"
+  printf 'environment\n' >"$root/opt/platform/identity/releases/partial/release.env"
+  chmod 0644 "$root/opt/platform/identity/releases/partial/compose.yml"
+  chmod 0600 "$root/opt/platform/identity/releases/partial/release.env"
+  cat >"$root/bin/docker" <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "$1" == compose ]]; then
+  [[ "${PLATFORM_IDENTITY_FIXTURE_DOCKER_FAIL:-false}" != true ]]
+  : >"$PLATFORM_IDENTITY_FIXTURE_DOCKER_ROOT/stopped"
+elif [[ "$1" == ps ]]; then
+  [[ -e "$PLATFORM_IDENTITY_FIXTURE_DOCKER_ROOT/stopped" ]] || printf 'fixture-container\n'
+else
+  exit 2
+fi
+SH
+  chmod 0755 "$root/bin/docker"
+  if [[ "$variant" == stop-failure ]]; then
+    if PATH="$root/bin:$PATH" PLATFORM_IDENTITY_LIFECYCLE_TEST_ROOT="$root" \
+      PLATFORM_IDENTITY_FIXTURE_RELEASE="$root/opt/platform/identity/releases/partial" \
+      PLATFORM_IDENTITY_FIXTURE_PREACTIVATION_STARTED=true PLATFORM_IDENTITY_FIXTURE_DOCKER_FAIL=true \
+      PLATFORM_IDENTITY_FIXTURE_DOCKER_ROOT="$root" \
+      bash deploy/ssm/deploy-identity.sh --cleanup-fixture >"$temporary/deploy-service-cleanup.out" 2>&1; then
+      printf 'Identity pre-activation cleanup suppressed a service-stop failure.\n' >&2
+      exit 1
+    fi
+    [[ -d "$root/opt/platform/identity/releases/partial" && ! -e "$root/stopped" ]]
+  else
+    PATH="$root/bin:$PATH" PLATFORM_IDENTITY_LIFECYCLE_TEST_ROOT="$root" \
+      PLATFORM_IDENTITY_FIXTURE_RELEASE="$root/opt/platform/identity/releases/partial" \
+      PLATFORM_IDENTITY_FIXTURE_PREACTIVATION_STARTED=true PLATFORM_IDENTITY_FIXTURE_DOCKER_ROOT="$root" \
+      bash deploy/ssm/deploy-identity.sh --cleanup-fixture >/dev/null
+    [[ -e "$root/stopped" && ! -e "$root/opt/platform/identity/releases/partial" ]]
   fi
 done
 
