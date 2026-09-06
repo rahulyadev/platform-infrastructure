@@ -157,6 +157,12 @@ systemd, verifier, or health failure restores the exact prior links, environment
 configuration, and service state, restarts the prior release, and proves it healthy. The previous
 link is promoted only after the candidate is healthy.
 
+The Identity Nginx candidate is the complete portfolio configuration with the two same-origin BFF
+routes and the separate Identity API virtual host. Activation atomically replaces `portfolio.conf`
+instead of loading a second set of default virtual hosts, and preserves the configured generation's
+mode while doing so. A failed first activation also removes every pre-activation candidate service
+and network while retaining the three data volumes.
+
 The design objectives are RPO no greater than 24 hours and RTO no greater than 4 hours. They are
 objectives pending live activation and repeated restore evidence, not achieved guarantees.
 

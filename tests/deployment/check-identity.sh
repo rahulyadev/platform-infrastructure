@@ -235,7 +235,8 @@ make_activation_root() {
   local root="$1" current_name="$2" previous_name="$3"
   install -d -m 0700 "$root"
   install -d -m 0755 "$root/run/lock" "$root/opt/platform/identity/releases" \
-    "$root/etc/platform/identity" "$root/etc/nginx/conf.d" "$root/usr/local/libexec/platform" "$root/bin"
+    "$root/etc/platform" "$root/etc/nginx/conf.d" "$root/usr/local/libexec/platform" "$root/bin"
+  install -d -m 0700 "$root/etc/platform/identity"
   for name in old older new candidate; do
     install -d -m 0755 "$root/opt/platform/identity/releases/$name"
     printf 'IDENTITY_SCHEMA_HEAD=0001_initial_identity_schema\nIDENTITY_RELEASE_ID=%s\n' "$name" >"$root/opt/platform/identity/releases/$name/release.env"
@@ -247,7 +248,7 @@ make_activation_root() {
   ln -s "$root/opt/platform/identity/releases/$current_name" "$root/opt/platform/identity/current"
   ln -s "$root/opt/platform/identity/releases/$previous_name" "$root/opt/platform/identity/previous"
   install -m 0600 "$root/opt/platform/identity/releases/$current_name/release.env" "$root/etc/platform/identity/release.env"
-  printf 'nginx=old\n' >"$root/etc/nginx/conf.d/identity-runtime.conf"
+  printf 'nginx=old\n' >"$root/etc/nginx/conf.d/portfolio.conf"
   printf 'nginx=new\n' >"$root/etc/platform/identity/identity-runtime.conf.staged"
   printf 'active\n' >"$root/service-state"
   readlink -f -- "$root/opt/platform/identity/current" >"$root/service-target"
@@ -269,7 +270,7 @@ SH
 set -Eeuo pipefail
 root="$PLATFORM_IDENTITY_LIFECYCLE_TEST_ROOT"
 [[ "$1" == -t ]]
-grep -Eq '^nginx=(old|new)$' "$root/etc/nginx/conf.d/identity-runtime.conf"
+grep -Eq '^nginx=(old|new)$' "$root/etc/nginx/conf.d/portfolio.conf"
 SH
   cat >"$root/usr/local/libexec/platform/identity-verify-release" <<'SH'
 #!/usr/bin/env bash
@@ -296,9 +297,10 @@ assert_restored() {
   [[ "$(readlink -f -- "$root/opt/platform/identity/current")" == "$root/opt/platform/identity/releases/$current_name" ]]
   [[ "$(readlink -f -- "$root/opt/platform/identity/previous")" == "$root/opt/platform/identity/releases/$previous_name" ]]
   cmp -s "$root/etc/platform/identity/release.env" "$root/opt/platform/identity/releases/$current_name/release.env"
-  grep -Fxq nginx=old "$root/etc/nginx/conf.d/identity-runtime.conf"
+  grep -Fxq nginx=old "$root/etc/nginx/conf.d/portfolio.conf"
   [[ "$(<"$root/service-state")" == active ]]
   [[ "$(<"$root/service-target")" == "$root/opt/platform/identity/releases/$current_name" ]]
+  [[ "$(stat -c '%a' "$root/etc/platform/identity")" == 700 ]]
   ! find "$root" -name '*.next' -print -quit | grep -q .
 }
 
@@ -323,6 +325,39 @@ PATH="$root/bin:$PATH" PLATFORM_IDENTITY_LIFECYCLE_TEST_ROOT="$root" \
 [[ "$(readlink -f -- "$root/opt/platform/identity/current")" == "$root/opt/platform/identity/releases/candidate" ]]
 [[ "$(readlink -f -- "$root/opt/platform/identity/previous")" == "$root/opt/platform/identity/releases/old" ]]
 [[ "$(<"$root/service-target")" == "$root/opt/platform/identity/releases/candidate" ]]
+[[ "$(stat -c '%a' "$root/etc/platform/identity")" == 700 ]]
+
+root="$temporary/deploy-first-activation-failure"
+make_activation_root "$root" old older
+rm -- "$root/opt/platform/identity/current" "$root/opt/platform/identity/previous"
+printf 'inactive\n' >"$root/service-state"
+: >"$root/service-target"
+cat >"$root/bin/docker" <<'SH'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "$1" == compose ]]; then
+  : >"$PLATFORM_IDENTITY_FIXTURE_DOCKER_ROOT/stopped"
+elif [[ "$1" == ps ]]; then
+  [[ -e "$PLATFORM_IDENTITY_FIXTURE_DOCKER_ROOT/stopped" ]] || printf 'fixture-container\n'
+else
+  exit 2
+fi
+SH
+chmod 0755 "$root/bin/docker"
+if PATH="$root/bin:$PATH" PLATFORM_IDENTITY_LIFECYCLE_TEST_ROOT="$root" \
+  PLATFORM_IDENTITY_FIXTURE_RELEASE="$root/opt/platform/identity/releases/candidate" \
+  PLATFORM_IDENTITY_FIXTURE_PREACTIVATION_STARTED=true PLATFORM_IDENTITY_FIXTURE_DOCKER_ROOT="$root" \
+  PLATFORM_IDENTITY_FAIL_AT=nginx_validation \
+  bash deploy/ssm/deploy-identity.sh --activation-fixture >"$temporary/deploy-first-activation.out" 2>&1; then
+  printf 'Identity first-activation failure fixture unexpectedly succeeded.\n' >&2
+  exit 1
+fi
+[[ -e "$root/stopped" ]]
+[[ ! -e "$root/opt/platform/identity/current" && ! -L "$root/opt/platform/identity/current" ]]
+[[ ! -e "$root/opt/platform/identity/previous" && ! -L "$root/opt/platform/identity/previous" ]]
+grep -Fxq nginx=old "$root/etc/nginx/conf.d/portfolio.conf"
+[[ "$(<"$root/service-state")" == inactive ]]
+[[ "$(stat -c '%a' "$root/etc/platform/identity")" == 700 ]]
 
 for variant in exact unexpected; do
   root="$temporary/deploy-cleanup-$variant"

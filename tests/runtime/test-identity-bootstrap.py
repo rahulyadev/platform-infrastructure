@@ -121,6 +121,19 @@ def validate_scripts(value):
         raise AssertionError("bootstrap client call")
     if deploy.count("run_postgres_client postgres-admin") != 3:
         raise AssertionError("deployment admin calls")
+    nginx_target = 'readonly nginx_configuration="$(rooted /etc/nginx/conf.d/portfolio.conf)"'
+    if deploy.count(nginx_target) != 1 or value["rollback-identity.sh"].count(nginx_target) != 1:
+        raise AssertionError("combined nginx target")
+    if "nginx/conf.d/identity-runtime.conf" in deploy or "nginx/conf.d/identity-runtime.conf" in value["rollback-identity.sh"]:
+        raise AssertionError("duplicate nginx target")
+    if 'parent="$(dirname -- "$target")"' not in deploy or '[[ -d "$parent" ]]' not in deploy:
+        raise AssertionError("atomic parent preservation")
+    if 'install -d -m 0755 "$(dirname -- "$target")"' in deploy:
+        raise AssertionError("atomic parent mode relaxation")
+    if deploy.count("stop_preactivation_services || status=1") != 1:
+        raise AssertionError("first activation service restoration")
+    if "validate_generation_directory" not in deploy or "700:0:0" not in deploy:
+        raise AssertionError("generation mode guard")
     expected_inputs = (
         'require_postgres_client_input "$generation/secrets/database/bootstrap.pgpass" 600:10001:10001',
         'require_postgres_client_input "$generation/secrets/database/migrator_password" 440:0:10001',
@@ -191,6 +204,10 @@ for name, old, new in (
     ("wrong-ca", "sslrootcert=/run/tls/postgres/ca.crt", "sslrootcert=/tmp/ca.crt"),
     ("missing-stdin", 'run_postgres_client postgres-bootstrap < "$generation/postgres-roles.sql"', "run_postgres_client postgres-bootstrap"),
     ("persistent-client", 'run --rm --no-deps --no-TTY "$service"', 'run --no-deps --no-TTY "$service"'),
+    ("duplicate-nginx-target", 'nginx/conf.d/portfolio.conf', 'nginx/conf.d/identity-runtime.conf'),
+    ("parent-mode-relaxation", '[[ -d "$parent" ]]', 'install -d -m 0755 "$parent"'),
+    ("missing-first-activation-cleanup", "stop_preactivation_services || status=1", ": # candidate cleanup removed"),
+    ("missing-generation-mode-guard", "700:0:0", "755:0:0"),
 ):
     candidate = dict(scripts)
     target = "deploy-identity.sh"
@@ -203,7 +220,7 @@ for name, old, new in (
         script_mutations.append(name)
     else:
         raise SystemExit("Identity client script mutation was accepted: " + name)
-if len(script_mutations) != 8:
+if len(script_mutations) != 12:
     raise SystemExit("Identity client script mutation count drifted.")
 
 print("Identity PostgreSQL clients use exact split mounts, UID 10001, verify-full TLS, and an internal network.")

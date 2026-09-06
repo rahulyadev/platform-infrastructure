@@ -27,7 +27,7 @@ readonly current="$(rooted /opt/platform/identity/current)"
 readonly previous="$(rooted /opt/platform/identity/previous)"
 readonly generation="$(rooted /etc/platform/identity)"
 readonly release_environment="$(rooted /etc/platform/identity/release.env)"
-readonly nginx_configuration="$(rooted /etc/nginx/conf.d/identity-runtime.conf)"
+readonly nginx_configuration="$(rooted /etc/nginx/conf.d/portfolio.conf)"
 readonly verify_release="$(rooted /usr/local/libexec/platform/identity-verify-release)"
 readonly health_verify="$(rooted /usr/local/libexec/platform/identity-health-verify)"
 readonly api_repository='__IDENTITY_API_REPOSITORY_URL__'
@@ -52,8 +52,9 @@ inject_failure() {
 }
 
 atomic_file() {
-  local source="$1" target="$2" mode="$3" temporary
-  install -d -m 0755 "$(dirname -- "$target")"
+  local source="$1" target="$2" mode="$3" temporary parent
+  parent="$(dirname -- "$target")"
+  [[ -d "$parent" ]]
   temporary="$(dirname -- "$target")/.$(basename -- "$target").identity.$$.next"
   rm -f -- "$temporary"
   install -m "$mode" "$source" "$temporary"
@@ -123,6 +124,9 @@ deployment_failed_metric() {
 restore_prior_release() {
   local status=0
   set +e
+  if [[ "$prior_service_active" == false ]]; then
+    stop_preactivation_services || status=1
+  fi
   restore_link "$current" current || status=1
   restore_link "$previous" previous || status=1
   restore_file "$release_environment" environment 0600 || status=1
@@ -139,7 +143,7 @@ restore_prior_release() {
   rm -f -- "$(dirname -- "$current")/.current.identity.$$.next" \
     "$(dirname -- "$previous")/.previous.identity.$$.next" \
     "$(dirname -- "$release_environment")/.release.env.identity.$$.next" \
-    "$(dirname -- "$nginx_configuration")/.identity-runtime.conf.identity.$$.next"
+    "$(dirname -- "$nginx_configuration")/.portfolio.conf.identity.$$.next"
   set -e
   return "$status"
 }
@@ -285,6 +289,19 @@ validate_postgres_client_inputs() {
   require_postgres_client_input "$generation/tls/postgres-client/ca.crt" 440:0:10001
 }
 
+validate_generation_directory() {
+  local resolved
+  if [[ -n "$test_root" ]]; then
+    [[ -d "$generation" && ! -L "$generation" ]]
+    [[ "$(stat -c '%a' "$generation")" == 700 ]]
+    return
+  fi
+  [[ -L "$generation" ]]
+  resolved="$(readlink -f -- "$generation")"
+  [[ "$resolved" == /etc/platform/identity-generations/* && -d "$resolved" && ! -L "$resolved" ]]
+  [[ "$(stat -c '%a:%u:%g' "$resolved")" == 700:0:0 ]]
+}
+
 if [[ -n "$test_root" && "$1" == --cleanup-fixture ]]; then
   release="${PLATFORM_IDENTITY_FIXTURE_RELEASE:?fixture release required}"
   release_created=true
@@ -299,8 +316,13 @@ if [[ -n "$test_root" && "$1" == --cleanup-fixture ]]; then
   exit 0
 fi
 
+validate_generation_directory
+
 if [[ -n "$test_root" ]]; then
   readonly fixture_release="${PLATFORM_IDENTITY_FIXTURE_RELEASE:?fixture release required}"
+  release="$fixture_release"
+  preactivation_services_started="${PLATFORM_IDENTITY_FIXTURE_PREACTIVATION_STARTED:-false}"
+  [[ "$preactivation_services_started" == true || "$preactivation_services_started" == false ]]
   activate_release "$fixture_release"
   printf 'Identity activation fixture completed.\n'
   exit 0
