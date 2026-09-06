@@ -47,6 +47,8 @@ Docker's static configuration, command arguments, logs, and repository metadata 
 The S3 repository also declares the exact regional AWS endpoint required by the pinned pgBackRest build.
 Deployment creates the stanza in a completed ephemeral wrapper invocation before starting the long-lived
 archiver, then waits on the wrapper-backed health check; startup never races a second stanza creator.
+The shared WAL-spool volume is mounted a second time beneath `pg_wal` in the archiver namespace only;
+the sidecar proves both paths are the same inode before passing the nested path required by pgBackRest.
 
 Secret values are never committed. The four host-readable secret schemas are names only:
 

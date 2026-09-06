@@ -71,6 +71,10 @@ def validate(value):
         "/etc/platform/identity/pgbackrest.conf", True, "bind"
     ) or "/etc/pgbackrest/pgbackrest.conf" in pgbackrest_mounts:
         raise AssertionError("pgbackrest traversable config mount")
+    if pgbackrest_mounts.get("/var/lib/postgresql/18/docker/pg_wal/platform-spool") != (
+        "identity_wal_spool", None, "volume"
+    ):
+        raise AssertionError("pgbackrest nested archive input")
     if pgbackrest.get("healthcheck", {}).get("test") != [
         "CMD", "/opt/platform/pgbackrest-sidecar", "--stanza=identity", "check"
     ]:
@@ -89,6 +93,7 @@ for name, operation in (
     ("public-network", lambda value: value["networks"]["state"].__setitem__("internal", False)),
     ("pgbackrest-default-config", lambda value: value["services"]["pgbackrest"].__setitem__("environment", {})),
     ("pgbackrest-direct-health", lambda value: value["services"]["pgbackrest"]["healthcheck"].__setitem__("test", ["CMD", "pgbackrest", "--stanza=identity", "check"])),
+    ("pgbackrest-missing-nested-spool", lambda value: value["services"]["pgbackrest"].__setitem__("volumes", [item for item in value["services"]["pgbackrest"]["volumes"] if item.get("target") != "/var/lib/postgresql/18/docker/pg_wal/platform-spool"])),
 ):
     candidate = copy.deepcopy(compose)
     operation(candidate)
@@ -98,7 +103,7 @@ for name, operation in (
         mutations.append(name)
     else:
         raise SystemExit("Identity PostgreSQL client mutation was accepted: " + name)
-if len(mutations) != 10:
+if len(mutations) != 11:
     raise SystemExit("Identity PostgreSQL client mutation count drifted.")
 
 scripts = {
@@ -153,9 +158,12 @@ def validate_scripts(value):
         raise AssertionError("pgbackrest wrapper callers")
     stanza_create = "--entrypoint " + wrapper + " pgbackrest --stanza=identity stanza-create"
     archiver_start = "up --detach --wait pgbackrest"
+    archive_mountpoint = "install -d -m 0700 /var/lib/postgresql/18/docker/pg_wal/platform-spool"
     if deploy.count(stanza_create) != 1 or deploy.count(archiver_start) != 1:
         raise AssertionError("pgbackrest serialized readiness")
-    if deploy.index(stanza_create) > deploy.index(archiver_start):
+    if deploy.count(archive_mountpoint) != 1:
+        raise AssertionError("pgbackrest archive mountpoint")
+    if not deploy.index(archive_mountpoint) < deploy.index(stanza_create) < deploy.index(archiver_start):
         raise AssertionError("pgbackrest stanza/start order")
     if re.search(r"exec[^\n]*pgbackrest(?:[^\n]*\n){0,1}[^\n]*stanza-create", deploy):
         raise AssertionError("pgbackrest competing stanza creator")
@@ -163,6 +171,10 @@ def validate_scripts(value):
         raise AssertionError("pgbackrest restore wrapper")
     if "PGBACKREST_REPO1_CIPHER_PASS" not in pgbackrest_sidecar or "440:0:65532" not in pgbackrest_sidecar:
         raise AssertionError("pgbackrest cipher wrapper")
+    if "archive_input_root=/var/lib/postgresql/18/docker/pg_wal/platform-spool" not in pgbackrest_sidecar:
+        raise AssertionError("pgbackrest nested archive source")
+    if "'%d:%i'" not in pgbackrest_sidecar:
+        raise AssertionError("pgbackrest archive inode proof")
     if "repo1-cipher-pass-command" in (root / "config/runtime/pgbackrest.conf.tftpl").read_text(encoding="utf-8"):
         raise AssertionError("unsupported pgbackrest cipher command")
 
@@ -193,6 +205,6 @@ if len(script_mutations) != 8:
     raise SystemExit("Identity client script mutation count drifted.")
 
 print("Identity PostgreSQL clients use exact split mounts, UID 10001, verify-full TLS, and an internal network.")
-print("Identity PostgreSQL server retains narrow credentials; ten independent client/backup mutations were rejected.")
+print("Identity PostgreSQL server retains narrow credentials; eleven independent client/backup mutations were rejected.")
 print("Identity metadata, UID, TLS hostname/CA, SQL stdin, and ephemeral-lifetime mutations were rejected.")
 print("Identity bootstrap, migration-head, grant-audit, marker, backup, verify, rollback, and restore callers are coherent.")

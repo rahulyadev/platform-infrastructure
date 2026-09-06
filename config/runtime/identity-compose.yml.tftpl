@@ -122,6 +122,7 @@ services:
       - identity_postgres:/var/lib/postgresql:ro
       - identity_postgres_run:/run/postgresql
       - identity_wal_spool:/var/spool/pgbackrest
+      - identity_wal_spool:/var/lib/postgresql/18/docker/pg_wal/platform-spool
       - /etc/platform/identity/pgbackrest.conf:/etc/pgbackrest.conf:ro
       - /etc/platform/identity/secrets/backup:/run/secrets/backup:ro
       - /usr/local/libexec/platform/pgbackrest-sidecar:/opt/platform/pgbackrest-sidecar:ro
