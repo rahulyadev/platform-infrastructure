@@ -101,7 +101,7 @@ readonly bff_image="${release[IDENTITY_BFF_IMAGE]}"
 [[ "${release[OAUTH_RESOURCE]}" == identity-service://api ]]
 [[ "${release[REDIS_KEY_NAMESPACE]}" == reference-bff:production:portfolio:identity ]]
 
-docker compose --file "$compose_file" --project-name identity-production config --quiet
+docker compose --env-file "$release_file" --file "$compose_file" --project-name identity-production config --quiet
 [[ "$(docker image inspect --format '{{.Architecture}}/{{.Os}}' "$api_image")" == arm64/linux ]]
 [[ "$(docker image inspect --format '{{.Architecture}}/{{.Os}}' "$bff_image")" == arm64/linux ]]
 docker image inspect --format '{{join .RepoDigests "\n"}}' "$api_image" | grep -Fxq "$api_image"

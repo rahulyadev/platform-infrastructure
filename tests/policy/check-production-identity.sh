@@ -810,6 +810,18 @@ require_fixed "$release_verifier" '[[ "${candidate_inventory[0]}" == compose.yml
   "release verification must require the exact Compose member type"
 require_fixed "$release_verifier" '[[ "${candidate_inventory[1]}" == release.env:f ]]' \
   "release verification must require the exact environment member type"
+require_fixed "$release_verifier" 'docker compose --env-file "$release_file" --file "$compose_file"' \
+  "release verification must supply the exact private environment as non-executable Compose data"
+require_fixed "$verify" '--env-file "$release_environment"' \
+  "standalone verification must supply the exact active release environment"
+require_fixed "$backup" '--env-file "$release_environment"' \
+  "standalone backup must supply the exact active release environment"
+require_fixed "$restore" '--env-file "$release_environment"' \
+  "isolated restore must supply the exact active release environment"
+require_fixed "$rollback" '--env-file "$original_target/release.env"' \
+  "rollback audit must supply the exact retained release environment"
+reject '^[[:space:]]*source[[:space:]]+.*release[.]env' "$release_verifier" "$verify" "$backup" "$restore" "$rollback" \
+  "standalone Compose callers must not execute release environment contents"
 require_fixed "$release_verifier" '"755:$expected_uid:$expected_gid"' \
   "release verification must require exact parent and root metadata"
 require_fixed "$release_verifier" '"600:$expected_file_uid:$expected_file_gid"' \

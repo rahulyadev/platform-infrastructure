@@ -14,10 +14,13 @@ readonly marker_created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 readonly marker="$(openssl rand -hex 16)"
 readonly backup_type="${SSM_backupType:-diff}"
 readonly compose_file=/opt/platform/identity/current/compose.yml
+readonly release_environment=/etc/platform/identity/release.env
 readonly metadata_root=/var/lib/platform/identity-recovery
 readonly temporary="$(mktemp -d /var/lib/platform/identity-backup.XXXXXXXX)"
-readonly -a compose=(docker compose --file "$compose_file" --project-name identity-production)
+readonly -a compose=(docker compose --env-file "$release_environment" --file "$compose_file" --project-name identity-production)
 [[ "$backup_type" == full || "$backup_type" == diff ]]
+[[ -f "$release_environment" && ! -L "$release_environment" ]]
+[[ "$(stat -c '%a:%u:%g' "$release_environment")" == 600:0:0 ]]
 chmod 0700 "$temporary"
 trap 'rm -rf -- "$temporary"' EXIT
 install -d -m 0700 "$metadata_root"

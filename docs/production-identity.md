@@ -168,6 +168,8 @@ When the first candidate unit itself fails, restoration also clears only that fa
 proves the prior inactive state so a subsequent transactional configuration is not rejected.
 Loopback readiness probes send the corresponding allowed production Host header, so they exercise
 the bound listener without weakening either application's host validation.
+Standalone release, verification, backup, restore, and rollback Compose clients load interpolation
+values through the exact private release environment as data, without shell-sourcing that file.
 
 The design objectives are RPO no greater than 24 hours and RTO no greater than 4 hours. They are
 objectives pending live activation and repeated restore evidence, not achieved guarantees.
