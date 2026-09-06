@@ -702,6 +702,11 @@ require_fixed "$compose" '--save' "Redis snapshot persistence must remain explic
 require_fixed "$compose" '- ""' "Redis snapshot persistence must remain disabled"
 require_fixed "$compose" 'volatile-ttl' "Redis eviction must remain expiry-compatible"
 require_fixed "$pgbackrest" 'repo1-cipher-type=aes-256-cbc' "pgBackRest repository encryption must remain enabled"
+reject 'repo1-cipher-pass(-command)?=' "$pgbackrest" "pgBackRest configuration must not embed or request the repository cipher"
+require_fixed config/runtime/pgbackrest-sidecar.sh 'PGBACKREST_REPO1_CIPHER_PASS' \
+  "the fixed pgBackRest wrapper must inject its file-backed cipher only into the child process"
+require_fixed config/runtime/pgbackrest-sidecar.sh "440:0:65532" \
+  "the fixed pgBackRest wrapper must validate exact cipher-file metadata"
 reject '^pg1-(host|port)=' "$pgbackrest" "pgBackRest must use only the shared administrative PostgreSQL socket"
 require_count 1 '^[[:space:]]*network_mode:[[:space:]]*host[[:space:]]*$' "$compose" \
   "only the listener-free pgBackRest sidecar may retain host-role credential reachability"

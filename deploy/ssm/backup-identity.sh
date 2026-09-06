@@ -46,9 +46,9 @@ INSERT INTO platform_recovery.markers(marker, created_at) VALUES (:'marker', :'m
 CHECKPOINT;
 SQL
 
-"${compose[@]}" exec --no-TTY pgbackrest pgbackrest --stanza=identity --type="$backup_type" backup
-"${compose[@]}" exec --no-TTY pgbackrest pgbackrest --stanza=identity check
-"${compose[@]}" exec --no-TTY pgbackrest pgbackrest --stanza=identity info --output=json >"$temporary/info.json"
+"${compose[@]}" exec --no-TTY pgbackrest /opt/platform/pgbackrest-sidecar --stanza=identity --type="$backup_type" backup
+"${compose[@]}" exec --no-TTY pgbackrest /opt/platform/pgbackrest-sidecar --stanza=identity check
+"${compose[@]}" exec --no-TTY pgbackrest /opt/platform/pgbackrest-sidecar --stanza=identity info --output=json >"$temporary/info.json"
 chmod 0600 "$temporary/info.json"
 
 python3 - "$temporary/info.json" "$temporary/metadata.json" "$marker" "$marker_created_at" "$backup_type" <<'PY'

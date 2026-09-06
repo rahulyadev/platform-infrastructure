@@ -1,8 +1,22 @@
 #!/bin/sh
 set -eu
 umask 077
+set +x
+
+repository_cipher_path=/run/secrets/backup/repository_cipher
+[ -f "$repository_cipher_path" ] && [ ! -L "$repository_cipher_path" ]
+[ "$(/usr/bin/stat -c '%a:%u:%g' "$repository_cipher_path")" = 440:0:65532 ]
+repository_cipher="$(/bin/cat "$repository_cipher_path")"
+[ -n "$repository_cipher" ]
+export PGBACKREST_REPO1_CIPHER_PASS="$repository_cipher"
+unset repository_cipher
+
+if [ "$#" -gt 0 ]; then
+  exec /usr/bin/pgbackrest "$@"
+fi
+
 stanza="${PGBACKREST_STANZA:-identity}"
-pgbackrest --stanza="$stanza" stanza-create
+/usr/bin/pgbackrest --stanza="$stanza" stanza-create
 
 while :; do
   found=false
@@ -10,7 +24,7 @@ while :; do
     [ -f "$wal_file" ] || continue
     case "$wal_file" in *.part) continue ;; esac
     found=true
-    pgbackrest --stanza="$stanza" archive-push "$wal_file"
+    /usr/bin/pgbackrest --stanza="$stanza" archive-push "$wal_file"
     rm -f -- "$wal_file"
     touch /var/spool/pgbackrest/.last-archive-success
   done
