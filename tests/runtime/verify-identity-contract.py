@@ -526,6 +526,7 @@ require('"600:$expected_file_uid:$expected_file_gid"' in release and '"644:$expe
 require('"755:$expected_uid:$expected_gid"' in release and "arm64/linux" in release)
 require("REDIS_KEY_NAMESPACE" in release and "IDENTITY_SCHEMA_HEAD" in release)
 require("source \"$release_file\"" not in release)
+require('docker compose --env-file "$release_file" --file "$compose_file"' in release)
 
 for fixed in (
     "b7bfb6e29824326a9a354bf3c7d0fe6988d0117a",
@@ -558,6 +559,7 @@ for fixed in (
 ):
     require(fixed in verify)
 require("eval " not in verify)
+require('--env-file "$release_environment"' in verify)
 docker_template_open = "{" + "{"
 docker_template_close = "}" + "}"
 require(f"{docker_template_open}.State.Running{docker_template_close}" == "{{.State.Running}}")
@@ -572,12 +574,16 @@ require(f"{docker_template_open}.RestartCount{docker_template_close}" == "{{.Res
 
 require("mktemp -d /var/lib/platform/identity-restore-rehearsal.XXXXXXXX" in restore)
 require("docker rm -f \"$container\"" in restore and 'rm -rf -- "$restore_root"' in restore)
+require('--env-file "$release_environment"' in backup)
+require('--env-file "$release_environment"' in restore)
+require('source /etc/platform/identity/release.env' not in restore)
 for fixed in ("platform_recovery.markers", "marker_created_at", "backup_label", "--set=\"$backup_label\"", "IDENTITY_SCHEMA_HEAD"):
     require(fixed in restore or fixed in release)
 for fixed in ("restore_original", '"$verify_release" "$rollback_target"', "previous_promotion", "live_schema="):
     require(fixed in rollback)
 require(rollback.index('"$health_verify"') < rollback.rindex('atomic_link "$original_target" "$previous"'))
 require("0001_initial_identity_schema" in rollback)
+require('--env-file "$original_target/release.env"' in rollback)
 for fixed in ("INSERT INTO platform_recovery.markers", "marker_created_at", "backup_label", "identity-backup-", "REVOKE ALL ON TABLE"):
     require(fixed in backup)
 

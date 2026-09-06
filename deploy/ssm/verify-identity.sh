@@ -13,13 +13,14 @@ readonly docker_health_status_template="${docker_template_open}.State.Health.Sta
 readonly docker_restart_template="${docker_template_open}.RestartCount${docker_template_close}"
 
 readonly compose_file=/opt/platform/identity/current/compose.yml
+readonly release_environment=/etc/platform/identity/release.env
 readonly project=identity-production
 readonly restart_state=/var/lib/platform/identity-container-restarts
 readonly metadata_token="$(curl --fail --silent --show-error --max-time 3 --request PUT \
   --header 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token)"
 readonly instance_id="$(curl --fail --silent --show-error --max-time 3 \
   --header "X-aws-ec2-metadata-token: $metadata_token" http://169.254.169.254/latest/meta-data/instance-id)"
-readonly -a compose=(docker compose --file "$compose_file" --project-name "$project")
+readonly -a compose=(docker compose --env-file "$release_environment" --file "$compose_file" --project-name "$project")
 stage=IdentityContainerFailure
 
 run_postgres_admin() {
@@ -33,6 +34,8 @@ for client_input in \
   /etc/platform/identity/tls/postgres-client/ca.crt; do
   [[ -f "$client_input" && ! -L "$client_input" ]]
 done
+[[ -f "$release_environment" && ! -L "$release_environment" ]]
+[[ "$(stat -c '%a:%u:%g' "$release_environment")" == 600:0:0 ]]
 [[ "$(stat -c '%a:%u:%g' /etc/platform/identity/secrets/database/bootstrap.pgpass)" == 600:10001:10001 ]]
 [[ "$(stat -c '%a:%u:%g' /etc/platform/identity/tls/postgres-client/ca.crt)" == 440:0:10001 ]]
 

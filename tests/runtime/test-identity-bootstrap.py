@@ -113,7 +113,7 @@ scripts = {
     name: (root / "deploy/ssm" / name).read_text(encoding="utf-8")
     for name in (
         "deploy-identity.sh", "backup-identity.sh", "verify-identity.sh",
-        "rollback-identity.sh", "restore-identity.sh",
+        "rollback-identity.sh", "restore-identity.sh", "verify-identity-release.sh",
     )
 }
 pgbackrest_sidecar = (root / "config/runtime/pgbackrest-sidecar.sh").read_text(encoding="utf-8")
@@ -197,6 +197,18 @@ def validate_scripts(value):
         raise AssertionError("pgbackrest synchronous queue drain")
     if "repo1-cipher-pass-command" in (root / "config/runtime/pgbackrest.conf.tftpl").read_text(encoding="utf-8"):
         raise AssertionError("unsupported pgbackrest cipher command")
+    environment_bindings = {
+        "verify-identity-release.sh": '--env-file "$release_file"',
+        "verify-identity.sh": '--env-file "$release_environment"',
+        "backup-identity.sh": '--env-file "$release_environment"',
+        "restore-identity.sh": '--env-file "$release_environment"',
+        "rollback-identity.sh": '--env-file "$original_target/release.env"',
+    }
+    for name, binding in environment_bindings.items():
+        if value[name].count(binding) != 1:
+            raise AssertionError("exact release environment: " + name)
+        if re.search(r"^\s*source\s+.*release[.]env", value[name], re.M):
+            raise AssertionError("executable release environment: " + name)
 
 validate_scripts(scripts)
 script_mutations = []
@@ -229,7 +241,29 @@ for name, old, new in (
 if len(script_mutations) != 13:
     raise SystemExit("Identity client script mutation count drifted.")
 
+environment_mutations = []
+for target, binding in {
+    "verify-identity-release.sh": '--env-file "$release_file"',
+    "verify-identity.sh": '--env-file "$release_environment"',
+    "backup-identity.sh": '--env-file "$release_environment"',
+    "restore-identity.sh": '--env-file "$release_environment"',
+    "rollback-identity.sh": '--env-file "$original_target/release.env"',
+}.items():
+    candidate = dict(scripts)
+    if candidate[target].count(binding) != 1:
+        raise SystemExit("Identity environment mutation source drifted: " + target)
+    candidate[target] = candidate[target].replace(binding, "--env-file /tmp/untrusted.env", 1)
+    try:
+        validate_scripts(candidate)
+    except AssertionError:
+        environment_mutations.append(target)
+    else:
+        raise SystemExit("Identity release environment mutation was accepted: " + target)
+if len(environment_mutations) != 5:
+    raise SystemExit("Identity release environment mutation count drifted.")
+
 print("Identity PostgreSQL clients use exact split mounts, UID 10001, verify-full TLS, and an internal network.")
 print("Identity PostgreSQL server retains narrow credentials; twelve independent client/backup/migration mutations were rejected.")
 print("Identity metadata, UID, TLS hostname/CA, SQL stdin, and ephemeral-lifetime mutations were rejected.")
 print("Identity bootstrap, migration-head, grant-audit, marker, backup, verify, rollback, and restore callers are coherent.")
+print("Identity release, verify, backup, restore, and rollback Compose callers use exact non-executable environment files.")

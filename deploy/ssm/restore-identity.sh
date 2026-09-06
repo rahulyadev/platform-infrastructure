@@ -82,6 +82,8 @@ readonly restore_root="$(mktemp -d /var/lib/platform/identity-restore-rehearsal.
 readonly container="identity-restore-${RANDOM}${RANDOM}"
 readonly restore_network="${container}-network"
 readonly compose_file=/opt/platform/identity/current/compose.yml
+readonly release_environment=/etc/platform/identity/release.env
+readonly -a compose=(docker compose --env-file "$release_environment" --file "$compose_file" --project-name identity-production)
 chmod 0700 "$restore_root"
 chown 999:65532 "$restore_root"
 chmod 0750 "$restore_root"
@@ -96,10 +98,7 @@ cleanup() {
 trap cleanup EXIT
 
 /usr/local/libexec/platform/identity-verify-release
-set -a
-source /etc/platform/identity/release.env
-set +a
-postgres_image="$(docker compose --file "$compose_file" --project-name identity-production config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["postgres"]["image"])')"
+postgres_image="$("${compose[@]}" config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["postgres"]["image"])')"
 [[ "$postgres_image" =~ ^postgres@sha256:[0-9a-f]{64}$ ]]
 [[ -f /etc/platform/identity/secrets/database/bootstrap.pgpass && ! -L /etc/platform/identity/secrets/database/bootstrap.pgpass ]]
 [[ "$(stat -c '%a:%u:%g' /etc/platform/identity/secrets/database/bootstrap.pgpass)" == 600:10001:10001 ]]
@@ -136,7 +135,7 @@ if [[ "$recovery_target" == immediate ]]; then
 else
   restore_arguments+=(--type=time --target="$recovery_target" --target-action=promote restore)
 fi
-docker compose --file "$compose_file" --project-name identity-production run --rm --no-deps \
+"${compose[@]}" run --rm --no-deps \
   --volume "$restore_root:/restore" --entrypoint /opt/platform/pgbackrest-sidecar pgbackrest "${restore_arguments[@]}"
 test -f "$restore_root/data/PG_VERSION"
 docker run --rm --user 0:0 --volume "$restore_root/data:/restore" --entrypoint /bin/sh "$postgres_image" \
