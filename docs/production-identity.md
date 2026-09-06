@@ -170,6 +170,10 @@ Loopback readiness probes send the corresponding allowed production Host header,
 the bound listener without weakening either application's host validation.
 Standalone release, verification, backup, restore, and rollback Compose clients load interpolation
 values through the exact private release environment as data, without shell-sourcing that file.
+The isolated restore uses a hardened ephemeral pgBackRest fetcher on the existing host-role path,
+with only the restored data copy mounted read-only for pgBackRest identity validation. PostgreSQL
+remains on an internal network and receives only validated archive files through a private shared
+directory, never the repository cipher, host network, or Docker socket.
 
 The design objectives are RPO no greater than 24 hours and RTO no greater than 4 hours. They are
 objectives pending live activation and repeated restore evidence, not achieved guarantees.

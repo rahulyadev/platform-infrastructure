@@ -573,10 +573,47 @@ require(f"{docker_template_open}.State.Health.Status{docker_template_close}" == 
 require(f"{docker_template_open}.RestartCount{docker_template_close}" == "{{.RestartCount}}")
 
 require("mktemp -d /var/lib/platform/identity-restore-rehearsal.XXXXXXXX" in restore)
-require("docker rm -f \"$container\"" in restore and 'rm -rf -- "$restore_root"' in restore)
+require("docker rm -f \"$container\"" in restore and 'docker rm -f "$archive_container"' in restore and 'rm -rf -- "$restore_root"' in restore)
 require('--env-file "$release_environment"' in backup)
 require('--env-file "$release_environment"' in restore)
 require('source /etc/platform/identity/release.env' not in restore)
+require(restore.count("^([0-9A-F]{24}|[0-9A-F]{8}[.]history)([.]partial)?$") == 2)
+require('[[ "$pgbackrest_image" =~ ^woblerr/pgbackrest@sha256:[0-9a-f]{64}$ ]]' in restore)
+require('docker network create --internal "$restore_network"' in restore)
+require(restore.count('--no-archive-async archive-get "$name" "$result.next"') == 1)
+require(restore.count('chmod 0600 "$destination"') == 1)
+require(restore.count('request_next="/archive/requests/.$name.next"') == 1)
+require(restore.count("count(*) = 1 AND min(version_num) = '0001_initial_identity_schema'") == 1)
+require(restore.count("NULLIF(:'recovery_target', 'immediate')::timestamptz") == 1)
+require(restore.count("for _ in {1..300}; do") == 1)
+for stage in ("postgres_readiness", "recovery_proof_query", "recovery_proof_assertion", "recovery_writability", "recovery_writability_assertion"):
+    require(len(re.findall(r"^restore_stage=" + stage + r"$", restore, re.MULTILINE)) == 1)
+require(restore.count("RESTORE_FAILURE_PROOF=%s") == 1)
+require(restore.count('[[ "$proof" == t:t:t:t:t ]]') == 1)
+require(restore.count('docker run --rm --interactive --network "$restore_network"') == 1)
+require(restore.count('run_restore_psql --quiet --tuples-only --no-align') == 1)
+fetcher_start = restore.index('docker run --detach --name "$archive_container"')
+fetcher = restore[fetcher_start:restore.index('\n[[ "$(docker inspect', fetcher_start)]
+for fixed in (
+    "--network host", "--user 999:65532", "--read-only", "--cap-drop ALL",
+    "--security-opt no-new-privileges", "--pids-limit 64",
+    "src=/etc/platform/identity/secrets/backup,dst=/run/secrets/backup,readonly",
+    'src="$restore_root/data",dst=/var/lib/postgresql/18/docker,readonly',
+    'src="$archive_root",dst=/archive',
+):
+    require(fetcher.count(fixed) == 1)
+for forbidden in ("/var/run/docker.sock", "identity_postgres_data", "--publish"):
+    require(forbidden not in fetcher)
+postgres_start = restore.index('docker run --detach --name "$container"')
+restore_postgres = restore[postgres_start:restore.index("\nfor _ in {1..300}; do", postgres_start)]
+for fixed in (
+    '--network "$restore_network"', "--user 999:999", "--read-only", "--cap-drop ALL",
+    "--security-opt no-new-privileges", 'src="$archive_root",dst=/archive',
+    "restore_command=/archive/restore-command %f /var/lib/postgresql/18/docker/%p",
+):
+    require(restore_postgres.count(fixed) == 1)
+for forbidden in ("/run/secrets/backup", "repository_cipher", "--network host", "/var/run/docker.sock"):
+    require(forbidden not in restore_postgres)
 for fixed in ("platform_recovery.markers", "marker_created_at", "backup_label", "--set=\"$backup_label\"", "IDENTITY_SCHEMA_HEAD"):
     require(fixed in restore or fixed in release)
 for fixed in ("restore_original", '"$verify_release" "$rollback_target"', "previous_promotion", "live_schema="):
