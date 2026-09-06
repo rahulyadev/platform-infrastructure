@@ -365,9 +365,9 @@ docker compose --file "$release/compose.yml" --project-name identity-production 
 deployment_stage=database_bootstrap
 run_postgres_client postgres-bootstrap < "$generation/postgres-roles.sql"
 deployment_stage=backup_service_readiness
-docker compose --file "$release/compose.yml" --project-name identity-production up --detach pgbackrest
-docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
-  /opt/platform/pgbackrest-sidecar --stanza=identity stanza-create
+docker compose --file "$release/compose.yml" --project-name identity-production run --rm --no-deps --no-TTY \
+  --entrypoint /opt/platform/pgbackrest-sidecar pgbackrest --stanza=identity stanza-create
+docker compose --file "$release/compose.yml" --project-name identity-production up --detach --wait pgbackrest
 docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
   /opt/platform/pgbackrest-sidecar --stanza=identity check
 deployment_stage=migration
