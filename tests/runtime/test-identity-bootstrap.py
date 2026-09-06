@@ -63,6 +63,14 @@ def validate(value):
             raise AssertionError(name + " mounts")
         if any(read_only is not True or kind != "bind" for _, read_only, kind in observed_mounts.values()):
             raise AssertionError(name + " mount mode")
+    pgbackrest = services["pgbackrest"]
+    if pgbackrest.get("environment") != {"PGBACKREST_CONFIG": "/etc/pgbackrest.conf"}:
+        raise AssertionError("pgbackrest config selection")
+    pgbackrest_mounts = mounts(pgbackrest)
+    if pgbackrest_mounts.get("/etc/pgbackrest.conf") != (
+        "/etc/platform/identity/pgbackrest.conf", True, "bind"
+    ) or "/etc/pgbackrest/pgbackrest.conf" in pgbackrest_mounts:
+        raise AssertionError("pgbackrest traversable config mount")
 
 validate(compose)
 mutations = []
@@ -75,6 +83,7 @@ for name, operation in (
     ("capability", lambda value: value["services"]["postgres-admin"].__setitem__("cap_drop", [])),
     ("restart", lambda value: value["services"]["postgres-admin"].__setitem__("restart", "always")),
     ("public-network", lambda value: value["networks"]["state"].__setitem__("internal", False)),
+    ("pgbackrest-default-config", lambda value: value["services"]["pgbackrest"].__setitem__("environment", {})),
 ):
     candidate = copy.deepcopy(compose)
     operation(candidate)
@@ -84,7 +93,7 @@ for name, operation in (
         mutations.append(name)
     else:
         raise SystemExit("Identity PostgreSQL client mutation was accepted: " + name)
-if len(mutations) != 8:
+if len(mutations) != 9:
     raise SystemExit("Identity PostgreSQL client mutation count drifted.")
 
 scripts = {
@@ -161,6 +170,6 @@ if len(script_mutations) != 8:
     raise SystemExit("Identity client script mutation count drifted.")
 
 print("Identity PostgreSQL clients use exact split mounts, UID 10001, verify-full TLS, and an internal network.")
-print("Identity PostgreSQL server retains narrow credentials; eight independent client mutations were rejected.")
+print("Identity PostgreSQL server retains narrow credentials; nine independent client/backup mutations were rejected.")
 print("Identity metadata, UID, TLS hostname/CA, SQL stdin, and ephemeral-lifetime mutations were rejected.")
 print("Identity bootstrap, migration-head, grant-audit, marker, backup, verify, rollback, and restore callers are coherent.")

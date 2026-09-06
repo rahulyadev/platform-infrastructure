@@ -116,11 +116,13 @@ services:
     user: "999:65532"
     tmpfs:
       - /tmp:rw,noexec,nosuid,nodev,size=64m
+    environment:
+      PGBACKREST_CONFIG: /etc/pgbackrest.conf
     volumes:
       - identity_postgres:/var/lib/postgresql:ro
       - identity_postgres_run:/run/postgresql
       - identity_wal_spool:/var/spool/pgbackrest
-      - /etc/platform/identity/pgbackrest.conf:/etc/pgbackrest/pgbackrest.conf:ro
+      - /etc/platform/identity/pgbackrest.conf:/etc/pgbackrest.conf:ro
       - /etc/platform/identity/secrets/backup:/run/secrets/backup:ro
       - /usr/local/libexec/platform/pgbackrest-sidecar:/opt/platform/pgbackrest-sidecar:ro
       - /etc/platform/identity/pgbackrest-passwd:/etc/passwd:ro

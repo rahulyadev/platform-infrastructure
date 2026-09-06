@@ -37,7 +37,9 @@ published port; no container mounts the Docker socket.
 The listener-free pgBackRest support sidecar alone uses host networking so the existing IMDSv2
 hop-limit of one remains unchanged while the AWS SDK obtains the host role. PostgreSQL access is
 only through the mounted administrative socket. Every service uses the host-role CloudWatch Logs
-driver and an exact gated log group.
+driver and an exact gated log group. The sidecar selects its single file bind explicitly at
+`/etc/pgbackrest.conf`, whose `/etc` parent is traversable by fixed UID/GID `999:65532`; it never
+depends on the pinned image's private UID-2001 configuration directory.
 
 Secret values are never committed. The four host-readable secret schemas are names only:
 
