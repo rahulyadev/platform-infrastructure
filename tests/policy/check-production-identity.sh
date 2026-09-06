@@ -762,6 +762,8 @@ reject 'install -d -m 0755 "\$\(dirname -- "\$target"\)"' deploy/ssm/deploy-iden
   "atomic file replacement must not relax the existing target parent mode"
 require_fixed deploy/ssm/deploy-identity.sh 'stop_preactivation_services || status=1' \
   "failed first activation must remove candidate services before restoring absent state"
+require_fixed deploy/ssm/deploy-identity.sh 'systemctl reset-failed identity-stack.service' \
+  "failed first activation must restore the prior inactive unit state"
 require_fixed deploy/ssm/deploy-identity.sh '[[ "$(stat -c '\''%a:%u:%g'\'' "$resolved")" == 700:0:0 ]]' \
   "deployment must reject a non-private active generation before activation"
 reject 'server_name[[:space:]]+auth[.]|proxy_pass[^;]*auth[.]' "$nginx" \

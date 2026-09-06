@@ -654,6 +654,7 @@ require('readonly nginx_configuration="$(rooted /etc/nginx/conf.d/portfolio.conf
 require('nginx/conf.d/identity-runtime.conf' not in deploy)
 require('install -d -m 0755 "$(dirname -- "$target")"' not in deploy)
 require(deploy.count("stop_preactivation_services || status=1") == 1)
+require(deploy.count("systemctl reset-failed identity-stack.service") == 1)
 require("validate_generation_directory" in deploy and "700:0:0" in deploy)
 
 print("Production Identity executable contract checks passed.")

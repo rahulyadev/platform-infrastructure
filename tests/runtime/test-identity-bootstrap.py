@@ -135,6 +135,8 @@ def validate_scripts(value):
         raise AssertionError("atomic parent mode relaxation")
     if deploy.count("stop_preactivation_services || status=1") != 1:
         raise AssertionError("first activation service restoration")
+    if deploy.count("systemctl reset-failed identity-stack.service") != 1:
+        raise AssertionError("first activation failed-unit restoration")
     if "validate_generation_directory" not in deploy or "700:0:0" not in deploy:
         raise AssertionError("generation mode guard")
     expected_inputs = (
@@ -210,6 +212,7 @@ for name, old, new in (
     ("duplicate-nginx-target", 'nginx/conf.d/portfolio.conf', 'nginx/conf.d/identity-runtime.conf'),
     ("parent-mode-relaxation", '[[ -d "$parent" ]]', 'install -d -m 0755 "$parent"'),
     ("missing-first-activation-cleanup", "stop_preactivation_services || status=1", ": # candidate cleanup removed"),
+    ("missing-failed-unit-reset", "systemctl reset-failed identity-stack.service", ": # failed cache retained"),
     ("missing-generation-mode-guard", "700:0:0", "755:0:0"),
 ):
     candidate = dict(scripts)
@@ -223,7 +226,7 @@ for name, old, new in (
         script_mutations.append(name)
     else:
         raise SystemExit("Identity client script mutation was accepted: " + name)
-if len(script_mutations) != 12:
+if len(script_mutations) != 13:
     raise SystemExit("Identity client script mutation count drifted.")
 
 print("Identity PostgreSQL clients use exact split mounts, UID 10001, verify-full TLS, and an internal network.")
