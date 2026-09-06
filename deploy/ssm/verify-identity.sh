@@ -53,9 +53,9 @@ verification_failed() {
 trap verification_failed ERR
 
 stage=IdentityApiHealthFailure
-curl --fail --silent --show-error --max-time 5 --noproxy '*' http://127.0.0.1:8081/health/ready >/dev/null
+curl --fail --silent --show-error --max-time 5 --noproxy '*' --header 'Host: identity.rahuly.in' http://127.0.0.1:8081/health/ready >/dev/null
 stage=IdentityBffHealthFailure
-curl --fail --silent --show-error --max-time 5 --noproxy '*' http://127.0.0.1:8082/health/ready >/dev/null
+curl --fail --silent --show-error --max-time 5 --noproxy '*' --header 'Host: rahuly.in' http://127.0.0.1:8082/health/ready >/dev/null
 
 stage=IdentityContainerFailure
 mapfile -t container_ids < <("${compose[@]}" ps --quiet)
