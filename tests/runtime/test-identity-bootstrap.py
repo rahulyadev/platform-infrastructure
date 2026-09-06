@@ -167,8 +167,79 @@ def validate_scripts(value):
         raise AssertionError("restore client calls")
     if connection not in deploy or connection not in value["restore-identity.sh"]:
         raise AssertionError("verify-full connection")
-    if "--network none" in value["restore-identity.sh"] and "identity-restore" in value["restore-identity.sh"]:
-        raise AssertionError("restore network")
+    restore = value["restore-identity.sh"]
+    archive_name = "^([0-9A-F]{24}|[0-9A-F]{8}[.]history)([.]partial)?$"
+    if restore.count(archive_name) != 2:
+        raise AssertionError("restore archive name grammar")
+    if restore.count('docker rm -f "$archive_container"') != 1:
+        raise AssertionError("restore archive cleanup")
+    if restore.count('docker network create --internal "$restore_network"') != 1:
+        raise AssertionError("restore internal network")
+    if restore.count('[[ "$pgbackrest_image" =~ ^woblerr/pgbackrest@sha256:[0-9a-f]{64}$ ]]') != 1:
+        raise AssertionError("restore archive image")
+    if restore.count('--no-archive-async archive-get "$name" "$result.next"') != 1:
+        raise AssertionError("restore synchronous archive fetch")
+    if restore.count('chmod 0600 "$destination"') != 1:
+        raise AssertionError("restore destination mode")
+    if restore.count('request_next="/archive/requests/.$name.next"') != 1:
+        raise AssertionError("restore hidden request transaction")
+    if restore.count("count(*) = 1 AND min(version_num) = '0001_initial_identity_schema'") != 1:
+        raise AssertionError("restore exact migration head")
+    if restore.count("NULLIF(:'recovery_target', 'immediate')::timestamptz") != 1:
+        raise AssertionError("restore immediate target cast")
+    if restore.count("for _ in {1..300}; do") != 1:
+        raise AssertionError("restore readiness bound")
+    for stage in ("postgres_readiness", "recovery_proof_query", "recovery_proof_assertion", "recovery_writability", "recovery_writability_assertion"):
+        if len(re.findall(r"^restore_stage=" + stage + r"$", restore, re.M)) != 1:
+            raise AssertionError("restore failure stage: " + stage)
+    if restore.count("RESTORE_FAILURE_PROOF=%s") != 1:
+        raise AssertionError("restore value-free proof diagnostic")
+    if restore.count('[[ "$proof" == t:t:t:t:t ]]') != 1:
+        raise AssertionError("restore boolean proof representation")
+    if restore.count('docker run --rm --interactive --network "$restore_network"') != 1:
+        raise AssertionError("restore SQL stdin attachment")
+    if restore.count('run_restore_psql --quiet --tuples-only --no-align') != 1:
+        raise AssertionError("restore writability scalar output")
+    fetcher_start = restore.index('docker run --detach --name "$archive_container"')
+    fetcher_end = restore.index("\n[[ \"$(docker inspect", fetcher_start)
+    fetcher = restore[fetcher_start:fetcher_end]
+    postgres_start = restore.index('docker run --detach --name "$container"')
+    postgres_end = restore.index("\nfor _ in {1..300}; do", postgres_start)
+    restore_postgres = restore[postgres_start:postgres_end]
+    for fixed in (
+        '--network host',
+        '--user 999:65532',
+        '--read-only',
+        '--cap-drop ALL',
+        '--security-opt no-new-privileges',
+        '--pids-limit 64',
+        'src=/etc/platform/identity/pgbackrest.conf,dst=/etc/pgbackrest.conf,readonly',
+        'src=/etc/platform/identity/secrets/backup,dst=/run/secrets/backup,readonly',
+        'src=/usr/local/libexec/platform/pgbackrest-sidecar,dst=/opt/platform/pgbackrest-sidecar,readonly',
+        'src=/etc/platform/identity/pgbackrest-passwd,dst=/etc/passwd,readonly',
+        'src="$restore_root/data",dst=/var/lib/postgresql/18/docker,readonly',
+        'src="$archive_root",dst=/archive',
+        '--entrypoint /bin/sh "$pgbackrest_image" /archive/archive-fetcher',
+    ):
+        if fetcher.count(fixed) != 1:
+            raise AssertionError("restore archive fetcher: " + fixed)
+    for forbidden in ("/var/run/docker.sock", "identity_postgres_data", "--publish"):
+        if forbidden in fetcher:
+            raise AssertionError("restore archive fetcher scope")
+    for fixed in (
+        '--network "$restore_network"',
+        '--user 999:999',
+        '--read-only',
+        '--cap-drop ALL',
+        '--security-opt no-new-privileges',
+        'src="$archive_root",dst=/archive',
+        "restore_command=/archive/restore-command %f /var/lib/postgresql/18/docker/%p",
+    ):
+        if restore_postgres.count(fixed) != 1:
+            raise AssertionError("restore PostgreSQL boundary: " + fixed)
+    for forbidden in ("/run/secrets/backup", "repository_cipher", "--network host", "/var/run/docker.sock"):
+        if forbidden in restore_postgres:
+            raise AssertionError("restore PostgreSQL secret isolation")
     if re.search(r"--file\s+\"?\$generation/postgres-roles[.]sql", deploy):
         raise AssertionError("unmounted host SQL path")
     wrapper = "/opt/platform/pgbackrest-sidecar"
@@ -241,6 +312,40 @@ for name, old, new in (
 if len(script_mutations) != 13:
     raise SystemExit("Identity client script mutation count drifted.")
 
+restore_mutations = []
+for name, old, new in (
+    ("missing-archive-cleanup", 'docker rm -f "$archive_container"', ': # archive cleanup removed'),
+    ("broad-archive-name", "^([0-9A-F]{24}|[0-9A-F]{8}[.]history)([.]partial)?$", "^[0-9A-Za-z.]+$"),
+    ("external-restore-network", 'docker network create --internal "$restore_network"', 'docker network create "$restore_network"'),
+    ("fetcher-root", '--network host --user 999:65532', '--network host --user 0:0'),
+    ("fetcher-docker-socket", '--mount type=bind,src="$archive_root",dst=/archive \\\n  --entrypoint /bin/sh', '--mount type=bind,src="$archive_root",dst=/archive \\\n  --mount type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock \\\n  --entrypoint /bin/sh'),
+    ("missing-fetcher-control-data", '--mount type=bind,src="$restore_root/data",dst=/var/lib/postgresql/18/docker,readonly \\\n', ''),
+    ("postgres-backup-secret", '--mount type=bind,src="$archive_root",dst=/archive \\\n  --mount type=bind,src=/etc/platform/identity/tls/postgres-server', '--mount type=bind,src="$archive_root",dst=/archive \\\n  --mount type=bind,src=/etc/platform/identity/secrets/backup,dst=/run/secrets/backup,readonly \\\n  --mount type=bind,src=/etc/platform/identity/tls/postgres-server'),
+    ("missing-archive-bridge", '--mount type=bind,src="$archive_root",dst=/archive \\\n  --mount type=bind,src=/etc/platform/identity/tls/postgres-server', '--mount type=bind,src=/etc/platform/identity/tls/postgres-server'),
+    ("relative-restore-destination", 'restore_command=/archive/restore-command %f /var/lib/postgresql/18/docker/%p', 'restore_command=/archive/restore-command %f %p'),
+    ("read-only-recovery-wal", 'chmod 0600 "$destination"', 'chmod 0400 "$destination"'),
+    ("short-recovery-readiness", "for _ in {1..300}; do", "for _ in {1..60}; do"),
+    ("verbose-boolean-proof", '[[ "$proof" == t:t:t:t:t ]]', '[[ "$proof" == true:true:true:true:true ]]'),
+    ("visible-request-temporary", 'request_next="/archive/requests/.$name.next"', 'request_next="$request.next"'),
+    ("non-exact-migration-head", "count(*) = 1 AND min(version_num) = '0001_initial_identity_schema'", "version_num = '0001_initial_identity_schema'"),
+    ("detached-restore-stdin", 'docker run --rm --interactive --network "$restore_network"', 'docker run --rm --network "$restore_network"'),
+    ("unsafe-immediate-cast", "NULLIF(:'recovery_target', 'immediate')::timestamptz", ":'recovery_target'::timestamptz"),
+    ("noisy-writability-output", 'run_restore_psql --quiet --tuples-only --no-align', 'run_restore_psql --tuples-only --no-align'),
+):
+    candidate = dict(scripts)
+    target = "restore-identity.sh"
+    if old not in candidate[target]:
+        raise SystemExit("Identity restore mutation source drifted: " + name)
+    candidate[target] = candidate[target].replace(old, new, 1)
+    try:
+        validate_scripts(candidate)
+    except (AssertionError, ValueError):
+        restore_mutations.append(name)
+    else:
+        raise SystemExit("Identity restore mutation was accepted: " + name)
+if len(restore_mutations) != 17:
+    raise SystemExit("Identity restore mutation count drifted.")
+
 environment_mutations = []
 for target, binding in {
     "verify-identity-release.sh": '--env-file "$release_file"',
@@ -267,3 +372,4 @@ print("Identity PostgreSQL server retains narrow credentials; twelve independent
 print("Identity metadata, UID, TLS hostname/CA, SQL stdin, and ephemeral-lifetime mutations were rejected.")
 print("Identity bootstrap, migration-head, grant-audit, marker, backup, verify, rollback, and restore callers are coherent.")
 print("Identity release, verify, backup, restore, and rollback Compose callers use exact non-executable environment files.")
+print("Identity isolated restore uses a pinned least-privilege archive fetcher and a secret-free internal PostgreSQL boundary.")

@@ -15,6 +15,12 @@ require_fixed() {
   grep -Fq -- "$2" "$1" || fail "$3"
 }
 
+require_fixed_count() {
+  local actual
+  actual="$(grep -Fc -- "$2" "$3" || true)"
+  [[ "$actual" == "$1" ]] || fail "$4"
+}
+
 require_count() {
   local actual
   actual="$(grep -Ec -- "$2" "$3" || true)"
@@ -818,6 +824,46 @@ require_fixed "$backup" '--env-file "$release_environment"' \
   "standalone backup must supply the exact active release environment"
 require_fixed "$restore" '--env-file "$release_environment"' \
   "isolated restore must supply the exact active release environment"
+require_fixed "$restore" 'docker rm -f "$archive_container"' \
+  "isolated restore must clean up its ephemeral archive fetcher"
+require_fixed_count 2 '^([0-9A-F]{24}|[0-9A-F]{8}[.]history)([.]partial)?$' "$restore" \
+  "isolated restore must validate archive names at both sides of its file bridge"
+require_fixed "$restore" '[[ "$pgbackrest_image" =~ ^woblerr/pgbackrest@sha256:[0-9a-f]{64}$ ]]' \
+  "isolated restore must derive an exact pinned pgBackRest image"
+require_fixed "$restore" 'docker network create --internal "$restore_network"' \
+  "isolated restore PostgreSQL must remain on an internal network"
+require_fixed "$restore" '--network host --user 999:65532 --read-only' \
+  "the ephemeral archive fetcher must retain its least-privilege identity and read-only root"
+require_fixed "$restore" '--cap-drop ALL --security-opt no-new-privileges --pids-limit 64' \
+  "the ephemeral archive fetcher must retain its capability, privilege, and process limits"
+require_fixed "$restore" 'src=/etc/platform/identity/secrets/backup,dst=/run/secrets/backup,readonly' \
+  "only the ephemeral archive fetcher may receive the backup credential directory"
+require_fixed "$restore" '--no-archive-async archive-get "$name" "$result.next"' \
+  "the ephemeral archive fetcher must avoid writable asynchronous spool state"
+require_fixed "$restore" 'src="$restore_root/data",dst=/var/lib/postgresql/18/docker,readonly' \
+  "the ephemeral archive fetcher must receive only the isolated restored data copy read-only"
+require_fixed "$restore" 'restore_command=/archive/restore-command %f /var/lib/postgresql/18/docker/%p' \
+  "isolated PostgreSQL must fetch archive files through the private bridge to an absolute destination"
+require_fixed "$restore" 'chmod 0600 "$destination"' \
+  "isolated PostgreSQL must receive a private writable recovery-WAL copy"
+require_fixed "$restore" 'request_next="/archive/requests/.$name.next"' \
+  "archive requests must become visible to the fetcher only after atomic publication"
+require_fixed "$restore" "count(*) = 1 AND min(version_num) = '0001_initial_identity_schema'" \
+  "isolated restore must prove the sole exact migration-head row"
+require_fixed "$restore" 'docker run --rm --interactive --network "$restore_network"' \
+  "the hardened ephemeral restore client must attach SQL stdin"
+require_fixed "$restore" "NULLIF(:'recovery_target', 'immediate')::timestamptz" \
+  "the immediate restore selector must never be cast as a timestamp"
+require_fixed "$restore" 'run_restore_psql --quiet --tuples-only --no-align' \
+  "the transactional restore writability proof must emit only its scalar result"
+require_fixed "$restore" 'for _ in {1..300}; do' \
+  "isolated recovery readiness must retain its bounded five-minute WAL replay window"
+require_fixed "$restore" 'RESTORE_FAILURE_PROOF=%s' \
+  "isolated restore failures must retain only the value-free recovery predicate vector"
+require_fixed "$restore" '[[ "$proof" == t:t:t:t:t ]]' \
+  "isolated restore must assert the exact psql five-boolean recovery proof"
+reject '/var/run/docker[.]sock|--publish' "$restore" \
+  "isolated restore must expose neither the Docker socket nor a listener"
 require_fixed "$rollback" '--env-file "$original_target/release.env"' \
   "rollback audit must supply the exact retained release environment"
 reject '^[[:space:]]*source[[:space:]]+.*release[.]env' "$release_verifier" "$verify" "$backup" "$restore" "$rollback" \
