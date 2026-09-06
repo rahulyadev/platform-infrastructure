@@ -702,6 +702,8 @@ require_fixed "$compose" '--save' "Redis snapshot persistence must remain explic
 require_fixed "$compose" '- ""' "Redis snapshot persistence must remain disabled"
 require_fixed "$compose" 'volatile-ttl' "Redis eviction must remain expiry-compatible"
 require_fixed "$pgbackrest" 'repo1-cipher-type=aes-256-cbc' "pgBackRest repository encryption must remain enabled"
+require_fixed "$pgbackrest" 'repo1-s3-endpoint=s3.${aws_region}.amazonaws.com' \
+  "pgBackRest must declare the exact regional S3 endpoint required by the pinned build"
 reject 'repo1-cipher-pass(-command)?=' "$pgbackrest" "pgBackRest configuration must not embed or request the repository cipher"
 require_fixed config/runtime/pgbackrest-sidecar.sh 'PGBACKREST_REPO1_CIPHER_PASS' \
   "the fixed pgBackRest wrapper must inject its file-backed cipher only into the child process"

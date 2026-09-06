@@ -44,6 +44,7 @@ The checked-in configuration never embeds the repository cipher and does not rel
 `repo1-cipher-pass-command` option. The fixed sidecar wrapper validates the dedicated mode-`0440`,
 `root:65532` secret bind and supplies the cipher only in the invoked pgBackRest process environment;
 Docker's static configuration, command arguments, logs, and repository metadata remain value-free.
+The S3 repository also declares the exact regional AWS endpoint required by the pinned pgBackRest build.
 
 Secret values are never committed. The four host-readable secret schemas are names only:
 
