@@ -137,7 +137,7 @@ else
   restore_arguments+=(--type=time --target="$recovery_target" --target-action=promote restore)
 fi
 docker compose --file "$compose_file" --project-name identity-production run --rm --no-deps \
-  --volume "$restore_root:/restore" --entrypoint pgbackrest pgbackrest "${restore_arguments[@]}"
+  --volume "$restore_root:/restore" --entrypoint /opt/platform/pgbackrest-sidecar pgbackrest "${restore_arguments[@]}"
 test -f "$restore_root/data/PG_VERSION"
 docker run --rm --user 0:0 --volume "$restore_root/data:/restore" --entrypoint /bin/sh "$postgres_image" \
   -c 'chown -R 999:999 /restore && chmod 0700 /restore'

@@ -16,6 +16,8 @@ if [[ -n "${IDENTITY_TASK003_PACKED_RESULT_OBJECT:-}" ]]; then
   affected_bootstrap_inputs=(
     config/runtime/identity-compose.yml.tftpl
     config/runtime/identity-launcher.py
+    config/runtime/pgbackrest.conf.tftpl
+    config/runtime/pgbackrest-sidecar.sh
     config/runtime/postgres-hba.conf
     config/runtime/postgres-roles.sql
     deploy/ssm/backup-identity.sh
@@ -28,12 +30,9 @@ if [[ -n "${IDENTITY_TASK003_PACKED_RESULT_OBJECT:-}" ]]; then
     # This value binds the changed source bytes above to the fresh, isolated
     # ARM64 production-Compose bootstrap/migration receipt. The old packed
     # application proof cannot stand in for an affected execution path.
-    [[ "${IDENTITY_TASK010_ARM64_PROOF_OBJECT:-}" == 58fea5ea6ffc519cd0faf025998b6a4a1130206d064f385ac170eafd1abe2be1 ]]
+    [[ "${IDENTITY_TASK010_ARM64_PROOF_OBJECT:-}" == 2e0e70c215ed0b5eee49f41677d1e060402f84d61fc6c81ee37501ae3cb7fee2 ]]
   fi
-  unchanged_packed_inputs=(
-    config/runtime/identity-images.json
-    config/runtime/pgbackrest.conf.tftpl
-  )
+  unchanged_packed_inputs=(config/runtime/identity-images.json)
   git diff --quiet c9e25c0e028f35f7d27297e1e0bdd90f77c2c107 -- "${unchanged_packed_inputs[@]}"
 
   role_fixture="platform-p3i4-role-metadata-$$"

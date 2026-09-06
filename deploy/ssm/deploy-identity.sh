@@ -366,8 +366,10 @@ deployment_stage=database_bootstrap
 run_postgres_client postgres-bootstrap < "$generation/postgres-roles.sql"
 deployment_stage=backup_service_readiness
 docker compose --file "$release/compose.yml" --project-name identity-production up --detach pgbackrest
-docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest pgbackrest --stanza=identity stanza-create
-docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest pgbackrest --stanza=identity check
+docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
+  /opt/platform/pgbackrest-sidecar --stanza=identity stanza-create
+docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
+  /opt/platform/pgbackrest-sidecar --stanza=identity check
 deployment_stage=migration
 docker compose --file "$release/compose.yml" --project-name identity-production run --rm migrator
 
@@ -396,7 +398,7 @@ CHECKPOINT;
 SQL
 deployment_stage=initial_backup
 docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
-  pgbackrest --stanza=identity --type=full backup
+  /opt/platform/pgbackrest-sidecar --stanza=identity --type=full backup
 docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
   touch /var/spool/pgbackrest/.last-backup-success
 recovery_metadata_root=/var/lib/platform/identity-recovery
@@ -404,7 +406,7 @@ install -d -m 0700 "$recovery_metadata_root"
 recovery_info="$(mktemp /var/lib/platform/identity-deploy-backup.XXXXXXXX)"
 recovery_metadata="$(mktemp /var/lib/platform/identity-deploy-metadata.XXXXXXXX)"
 docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
-  pgbackrest --stanza=identity info --output=json >"$recovery_info"
+  /opt/platform/pgbackrest-sidecar --stanza=identity info --output=json >"$recovery_info"
 python3 - "$recovery_info" "$recovery_metadata" "$recovery_marker" "$recovery_marker_created_at" <<'PY'
 import datetime
 import json

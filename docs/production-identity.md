@@ -40,6 +40,10 @@ only through the mounted administrative socket. Every service uses the host-role
 driver and an exact gated log group. The sidecar selects its single file bind explicitly at
 `/etc/pgbackrest.conf`, whose `/etc` parent is traversable by fixed UID/GID `999:65532`; it never
 depends on the pinned image's private UID-2001 configuration directory.
+The checked-in configuration never embeds the repository cipher and does not rely on the unsupported
+`repo1-cipher-pass-command` option. The fixed sidecar wrapper validates the dedicated mode-`0440`,
+`root:65532` secret bind and supplies the cipher only in the invoked pgBackRest process environment;
+Docker's static configuration, command arguments, logs, and repository metadata remain value-free.
 
 Secret values are never committed. The four host-readable secret schemas are names only:
 

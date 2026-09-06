@@ -103,6 +103,7 @@ scripts = {
         "rollback-identity.sh", "restore-identity.sh",
     )
 }
+pgbackrest_sidecar = (root / "config/runtime/pgbackrest-sidecar.sh").read_text(encoding="utf-8")
 
 def validate_scripts(value):
     deploy = value["deploy-identity.sh"]
@@ -142,6 +143,15 @@ def validate_scripts(value):
         raise AssertionError("restore network")
     if re.search(r"--file\s+\"?\$generation/postgres-roles[.]sql", deploy):
         raise AssertionError("unmounted host SQL path")
+    wrapper = "/opt/platform/pgbackrest-sidecar"
+    if deploy.count(wrapper) != 4 or value["backup-identity.sh"].count(wrapper) != 3:
+        raise AssertionError("pgbackrest wrapper callers")
+    if value["restore-identity.sh"].count("--entrypoint " + wrapper) != 1:
+        raise AssertionError("pgbackrest restore wrapper")
+    if "PGBACKREST_REPO1_CIPHER_PASS" not in pgbackrest_sidecar or "440:0:65532" not in pgbackrest_sidecar:
+        raise AssertionError("pgbackrest cipher wrapper")
+    if "repo1-cipher-pass-command" in (root / "config/runtime/pgbackrest.conf.tftpl").read_text(encoding="utf-8"):
+        raise AssertionError("unsupported pgbackrest cipher command")
 
 validate_scripts(scripts)
 script_mutations = []
