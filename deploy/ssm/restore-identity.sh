@@ -80,6 +80,7 @@ exec 9>"$lifecycle_lock"
 flock -w 30 9
 readonly restore_root="$(mktemp -d /var/lib/platform/identity-restore-rehearsal.XXXXXXXX)"
 readonly container="identity-restore-${RANDOM}${RANDOM}"
+readonly restore_network="${container}-network"
 readonly compose_file=/opt/platform/identity/current/compose.yml
 chmod 0700 "$restore_root"
 chown 999:65532 "$restore_root"
@@ -87,6 +88,7 @@ chmod 0750 "$restore_root"
 
 cleanup() {
   docker rm -f "$container" >/dev/null 2>&1 || true
+  docker network rm "$restore_network" >/dev/null 2>&1 || true
   chmod -R u+rwx "$restore_root" >/dev/null 2>&1 || true
   rm -rf -- "$restore_root"
   rm -f -- "$selection"
@@ -99,6 +101,20 @@ source /etc/platform/identity/release.env
 set +a
 postgres_image="$(docker compose --file "$compose_file" --project-name identity-production config --format json | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["postgres"]["image"])')"
 [[ "$postgres_image" =~ ^postgres@sha256:[0-9a-f]{64}$ ]]
+[[ -f /etc/platform/identity/secrets/database/bootstrap.pgpass && ! -L /etc/platform/identity/secrets/database/bootstrap.pgpass ]]
+[[ "$(stat -c '%a:%u:%g' /etc/platform/identity/secrets/database/bootstrap.pgpass)" == 600:10001:10001 ]]
+[[ -f /etc/platform/identity/tls/postgres-client/ca.crt && ! -L /etc/platform/identity/tls/postgres-client/ca.crt ]]
+[[ "$(stat -c '%a:%u:%g' /etc/platform/identity/tls/postgres-client/ca.crt)" == 440:0:10001 ]]
+
+run_restore_psql() {
+  docker run --rm --network "$restore_network" --user 10001:10001 --read-only --cap-drop ALL \
+    --security-opt no-new-privileges --pids-limit 64 --tmpfs /tmp:rw,noexec,nosuid,nodev,size=32m \
+    --mount type=bind,src=/etc/platform/identity/secrets/database/bootstrap.pgpass,dst=/run/secrets/database/bootstrap.pgpass,readonly \
+    --mount type=bind,src=/etc/platform/identity/tls/postgres-client/ca.crt,dst=/run/tls/postgres/ca.crt,readonly \
+    --env PGPASSFILE=/run/secrets/database/bootstrap.pgpass --entrypoint psql "$postgres_image" \
+    'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' \
+    --no-psqlrc --set ON_ERROR_STOP=1 "$@"
+}
 
 readarray -t recovery < <(python3 - "$selection" <<'PY'
 import json
@@ -125,16 +141,23 @@ docker compose --file "$compose_file" --project-name identity-production run --r
 test -f "$restore_root/data/PG_VERSION"
 docker run --rm --user 0:0 --volume "$restore_root/data:/restore" --entrypoint /bin/sh "$postgres_image" \
   -c 'chown -R 999:999 /restore && chmod 0700 /restore'
-docker run --detach --name "$container" --network none --read-only --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /run/postgresql:rw,nosuid,nodev \
-  --volume "$restore_root/data:/var/lib/postgresql/18/docker" "$postgres_image" postgres \
-  -c listen_addresses= -c archive_mode=off >/dev/null
+docker network create --internal "$restore_network" >/dev/null
+docker run --detach --name "$container" --network "$restore_network" --network-alias postgres \
+  --user 999:999 --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --tmpfs /tmp:rw,noexec,nosuid,nodev --tmpfs /run/postgresql:rw,nosuid,nodev \
+  --volume "$restore_root/data:/var/lib/postgresql/18/docker" \
+  --mount type=bind,src=/etc/platform/identity/tls/postgres-server,dst=/run/tls/postgres,readonly \
+  --mount type=bind,src=/etc/platform/identity/postgres-hba.conf,dst=/run/config/postgres-hba.conf,readonly \
+  "$postgres_image" postgres -c listen_addresses='*' -c archive_mode=off -c ssl=on \
+  -c ssl_cert_file=/run/tls/postgres/server.crt -c ssl_key_file=/run/tls/postgres/server.key \
+  -c ssl_ca_file=/run/tls/postgres/ca.crt -c hba_file=/run/config/postgres-hba.conf >/dev/null
 for _ in {1..60}; do
-  if docker exec "$container" pg_isready --dbname identity --username identity_bootstrap >/dev/null 2>&1; then break; fi
+  if run_restore_psql --tuples-only --no-align --command 'SELECT 1;' >/dev/null 2>&1; then break; fi
   sleep 1
 done
-docker exec "$container" pg_isready --dbname identity --username identity_bootstrap >/dev/null
+[[ "$(run_restore_psql --tuples-only --no-align --command 'SELECT 1;')" == 1 ]]
 
-proof="$(docker exec --interactive "$container" psql --username identity_bootstrap --dbname identity --no-psqlrc --tuples-only --no-align \
+proof="$(run_restore_psql --tuples-only --no-align \
   --set marker="$expected_marker" --set marker_created_at="$expected_marker_created_at" --set recovery_target="$recovery_target" <<'SQL'
 SELECT concat_ws(':',
   (SELECT version_num = '0001_initial_identity_schema' FROM identity.alembic_version),
@@ -148,7 +171,7 @@ SELECT concat_ws(':',
 SQL
 )"
 [[ "$proof" == t:t:t:t:t ]]
-writable="$(docker exec "$container" psql --username identity_bootstrap --dbname identity --no-psqlrc --tuples-only --no-align \
+writable="$(run_restore_psql --tuples-only --no-align \
   --command "BEGIN; CREATE TEMP TABLE restore_writability(value text); INSERT INTO restore_writability VALUES ('ok'); SELECT value FROM restore_writability; ROLLBACK;")"
 [[ "$writable" == ok ]]
 printf 'Identity isolated restore rehearsal proved the exact migration head and pre-backup recovery marker.\n'

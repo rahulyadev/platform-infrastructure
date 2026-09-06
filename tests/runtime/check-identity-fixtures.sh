@@ -13,14 +13,26 @@ docker info >/dev/null 2>&1 || {
 
 if [[ -n "${IDENTITY_TASK003_PACKED_RESULT_OBJECT:-}" ]]; then
   [[ "$IDENTITY_TASK003_PACKED_RESULT_OBJECT" == b7bfb6e29824326a9a354bf3c7d0fe6988d0117a ]]
-  # config/runtime/identity-compose.yml.tftpl is intentionally covered by the
-  # fresh Task009 Postgres hardening fixture and the independent source gate.
+  affected_bootstrap_inputs=(
+    config/runtime/identity-compose.yml.tftpl
+    config/runtime/identity-launcher.py
+    config/runtime/postgres-hba.conf
+    config/runtime/postgres-roles.sql
+    deploy/ssm/backup-identity.sh
+    deploy/ssm/deploy-identity.sh
+    deploy/ssm/restore-identity.sh
+    deploy/ssm/rollback-identity.sh
+    deploy/ssm/verify-identity.sh
+  )
+  if ! git diff --quiet c9e25c0e028f35f7d27297e1e0bdd90f77c2c107 -- "${affected_bootstrap_inputs[@]}"; then
+    # This value binds the changed source bytes above to the fresh, isolated
+    # ARM64 production-Compose bootstrap/migration receipt. The old packed
+    # application proof cannot stand in for an affected execution path.
+    [[ "${IDENTITY_TASK010_ARM64_PROOF_OBJECT:-}" == 97c27a39a8fbbfa8855634cd268e6723c9e27bb25509303bf65c93f845214283 ]]
+  fi
   unchanged_packed_inputs=(
     config/runtime/identity-images.json
-    config/runtime/identity-launcher.py
     config/runtime/pgbackrest.conf.tftpl
-    deploy/ssm/backup-identity.sh
-    deploy/ssm/restore-identity.sh
   )
   git diff --quiet c9e25c0e028f35f7d27297e1e0bdd90f77c2c107 -- "${unchanged_packed_inputs[@]}"
 

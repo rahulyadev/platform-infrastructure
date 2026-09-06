@@ -9,6 +9,30 @@ x-hardened: &hardened
   tmpfs:
     - /tmp:rw,noexec,nosuid,nodev,size=64m
 
+x-postgres-client: &postgres-client
+  image: ${postgres_image}
+  platform: linux/arm64/v8
+  user: "10001:10001"
+  restart: "no"
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  pids_limit: 64
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=32m
+  environment:
+    PGPASSFILE: /run/secrets/database/bootstrap.pgpass
+  entrypoint: [psql]
+  profiles: [administration]
+  networks: [state]
+  mem_limit: 128m
+  logging:
+    driver: awslogs
+    options:
+      awslogs-region: ${aws_region}
+      awslogs-group: /${name_prefix}/identity/deployment
+      awslogs-stream: postgres-client
+
 services:
   postgres:
     image: ${postgres_image}
@@ -67,6 +91,20 @@ services:
         awslogs-region: ${aws_region}
         awslogs-group: /${name_prefix}/identity/database
         awslogs-stream: postgres
+
+  postgres-admin:
+    <<: *postgres-client
+    volumes:
+      - /etc/platform/identity/secrets/database/bootstrap.pgpass:/run/secrets/database/bootstrap.pgpass:ro
+      - /etc/platform/identity/tls/postgres-client/ca.crt:/run/tls/postgres/ca.crt:ro
+
+  postgres-bootstrap:
+    <<: *postgres-client
+    volumes:
+      - /etc/platform/identity/secrets/database/bootstrap.pgpass:/run/secrets/database/bootstrap.pgpass:ro
+      - /etc/platform/identity/secrets/database/migrator_password:/run/secrets/database/migrator_password:ro
+      - /etc/platform/identity/secrets/database/runtime_password:/run/secrets/database/runtime_password:ro
+      - /etc/platform/identity/tls/postgres-client/ca.crt:/run/tls/postgres/ca.crt:ro
 
   pgbackrest:
     image: ${pgbackrest_image}

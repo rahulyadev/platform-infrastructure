@@ -43,6 +43,7 @@ recovery_metadata=""
 release=""
 release_created=false
 preactivation_services_started=false
+deployment_stage=input_validation
 
 inject_failure() {
   if [[ -n "$test_root" && "${PLATFORM_IDENTITY_FAIL_AT:-}" == "$1" ]]; then
@@ -191,9 +192,11 @@ on_error() {
     remove_unactivated_release || recovery_status=1
   fi
   if [[ "$recovery_status" != 0 ]]; then
+    printf 'Identity deployment stage=%s failed; restoration=failed.\n' "$deployment_stage" >&2
     printf 'Identity deployment failed and exact prior-state recovery failed.\n' >&2
     exit 1
   fi
+  printf 'Identity deployment stage=%s failed; restoration=succeeded.\n' "$deployment_stage" >&2
   printf 'Identity deployment failed; the prior healthy release was restored.\n' >&2
   exit "$original_status"
 }
@@ -260,6 +263,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
+run_postgres_client() {
+  local service="$1"
+  shift
+  docker compose --file "$release/compose.yml" --project-name identity-production \
+    run --rm --no-deps --no-TTY "$service" \
+    'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' \
+    --no-psqlrc --set ON_ERROR_STOP=1 "$@"
+}
+
+require_postgres_client_input() {
+  local path="$1" expected="$2"
+  [[ -f "$path" && ! -L "$path" ]]
+  [[ "$(stat -c '%a:%u:%g' "$path")" == "$expected" ]]
+}
+
+validate_postgres_client_inputs() {
+  require_postgres_client_input "$generation/secrets/database/bootstrap.pgpass" 600:10001:10001
+  require_postgres_client_input "$generation/secrets/database/migrator_password" 440:0:10001
+  require_postgres_client_input "$generation/secrets/database/runtime_password" 440:0:10001
+  require_postgres_client_input "$generation/tls/postgres-client/ca.crt" 440:0:10001
+}
+
 if [[ -n "$test_root" && "$1" == --cleanup-fixture ]]; then
   release="${PLATFORM_IDENTITY_FIXTURE_RELEASE:?fixture release required}"
   release_created=true
@@ -310,6 +335,9 @@ chmod 0600 "$release/release.env"
 
 export IDENTITY_API_IMAGE="$api_image" IDENTITY_BFF_IMAGE="$bff_image"
 export COGNITO_ISSUER="$cognito_issuer" COGNITO_JWKS_URL="$cognito_jwks_url" COGNITO_CLIENT_ID="$cognito_client_id"
+deployment_stage=client_input_validation
+validate_postgres_client_inputs
+deployment_stage=image_validation
 images_missing=false
 for image in "$api_image" "$bff_image"; do
   if ! docker image inspect "$image" >/dev/null 2>&1; then images_missing=true; fi
@@ -325,36 +353,35 @@ for image in "$api_image" "$bff_image"; do
   docker image inspect --format '{{join .RepoDigests "\n"}}' "$image" | grep -Fxq "$image"
 done
 
+deployment_stage=database_volume_preparation
 preactivation_services_started=true
 docker compose --file "$release/compose.yml" --project-name identity-production run --rm --no-deps --user 999:999 postgres \
   sh -c 'install -d -m 0700 /var/lib/postgresql/18/docker && chmod 0700 /var/lib/postgresql /var/lib/postgresql/18/docker'
 docker compose --file "$release/compose.yml" --project-name identity-production run --rm --no-deps --user root \
   --cap-add CHOWN --cap-add FOWNER postgres \
   sh -c 'chmod 0770 /run/postgresql /var/spool/pgbackrest && chown 999:999 /run/postgresql /var/spool/pgbackrest'
+deployment_stage=database_readiness
 docker compose --file "$release/compose.yml" --project-name identity-production up --detach --wait postgres redis
-docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY \
-  --user 10001:10001 --env PGPASSFILE=/run/secrets/database/bootstrap.pgpass postgres \
-  psql "host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/client/ca.crt" \
-  < "$generation/postgres-roles.sql"
+deployment_stage=database_bootstrap
+run_postgres_client postgres-bootstrap < "$generation/postgres-roles.sql"
+deployment_stage=backup_service_readiness
 docker compose --file "$release/compose.yml" --project-name identity-production up --detach pgbackrest
 docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest pgbackrest --stanza=identity stanza-create
 docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest pgbackrest --stanza=identity check
+deployment_stage=migration
 docker compose --file "$release/compose.yml" --project-name identity-production run --rm migrator
 
-observed_head="$(docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY \
-  --env PGPASSFILE=/run/secrets/database/bootstrap.pgpass postgres \
-  psql "host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt" \
-  --no-psqlrc --tuples-only --no-align --command 'SELECT version_num FROM identity.alembic_version;')"
+deployment_stage=migration_head
+observed_head="$(run_postgres_client postgres-admin --tuples-only --no-align \
+  --command 'SELECT version_num FROM identity.alembic_version;')"
 [[ "$observed_head" == "$schema_head" ]]
-docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY \
-  --env PGPASSFILE=/run/secrets/database/bootstrap.pgpass postgres \
-  psql "host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt" \
-  --no-psqlrc --set ON_ERROR_STOP=1 --set IDENTITY_POST_MIGRATION_AUDIT=1 --file "$generation/postgres-roles.sql"
+deployment_stage=grant_audit
+run_postgres_client postgres-admin --set IDENTITY_POST_MIGRATION_AUDIT=1 < "$generation/postgres-roles.sql"
 
+deployment_stage=recovery_marker
 recovery_marker="$(openssl rand -hex 16)"
 recovery_marker_created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY postgres \
-  psql --username identity_bootstrap --dbname identity --no-psqlrc --set ON_ERROR_STOP=1 \
+run_postgres_client postgres-admin \
   --set marker="$recovery_marker" --set marker_created_at="$recovery_marker_created_at" <<'SQL'
 CREATE SCHEMA IF NOT EXISTS platform_recovery AUTHORIZATION identity_bootstrap;
 REVOKE ALL ON SCHEMA platform_recovery FROM PUBLIC, identity_service_owner, identity_service_migrator, identity_service_app;
@@ -367,6 +394,7 @@ REVOKE ALL ON TABLE platform_recovery.markers FROM PUBLIC, identity_service_owne
 INSERT INTO platform_recovery.markers(marker, created_at) VALUES (:'marker', :'marker_created_at'::timestamptz);
 CHECKPOINT;
 SQL
+deployment_stage=initial_backup
 docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
   pgbackrest --stanza=identity --type=full backup
 docker compose --file "$release/compose.yml" --project-name identity-production exec --no-TTY pgbackrest \
@@ -414,5 +442,6 @@ rm -f -- "$recovery_info" "$recovery_metadata"
 recovery_info=""
 recovery_metadata=""
 
+deployment_stage=activation
 activate_release "$release"
 printf 'Identity deployment completed for an immutable repository-bound ARM64 release.\n'

@@ -15,6 +15,7 @@ python3 tests/runtime/verify-identity-contract.py .
 python3 tests/runtime/test-identity-configure-diagnostic.py
 bash tests/runtime/check-identity-host-prerequisites.sh
 bash tests/runtime/check-identity-mutations.sh
+bash tests/runtime/check-identity-bootstrap.sh
 
 oidc_root="$temporary/oidc"
 install -d -m 0700 "$oidc_root" "$temporary/oidc-data"
@@ -306,7 +307,7 @@ docker compose --file "$temporary/compose.yml" config --quiet
 
 ! grep -Eq 'ports:.*(5432|6379)' config/runtime/identity-compose.yml.tftpl
 ! grep -Eq '/var/run/docker.sock|/run/docker.sock' config/runtime/identity-compose.yml.tftpl
-[[ "$(grep -Fc 'driver: awslogs' config/runtime/identity-compose.yml.tftpl)" == 6 ]]
+[[ "$(grep -Fc 'driver: awslogs' config/runtime/identity-compose.yml.tftpl)" == 7 ]]
 [[ "$(grep -Fc 'network_mode: host' config/runtime/identity-compose.yml.tftpl)" == 1 ]]
 ! grep -Eq '^pg1-(host|port)=' config/runtime/pgbackrest.conf.tftpl
 

@@ -142,9 +142,16 @@ rollback_target="$(readlink -f -- "$previous")"
 target_schema="$(sed -n 's/^IDENTITY_SCHEMA_HEAD=//p' "$rollback_target/release.env")"
 [[ "$target_schema" == 0001_initial_identity_schema ]]
 if [[ -z "$test_root" ]]; then
-  live_schema="$(docker compose --file "$original_target/compose.yml" --project-name identity-production exec --no-TTY \
-    --env PGPASSFILE=/run/secrets/database/bootstrap.pgpass postgres \
-    psql 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' \
+  for client_input in \
+    /etc/platform/identity/secrets/database/bootstrap.pgpass \
+    /etc/platform/identity/tls/postgres-client/ca.crt; do
+    [[ -f "$client_input" && ! -L "$client_input" ]]
+  done
+  [[ "$(stat -c '%a:%u:%g' /etc/platform/identity/secrets/database/bootstrap.pgpass)" == 600:10001:10001 ]]
+  [[ "$(stat -c '%a:%u:%g' /etc/platform/identity/tls/postgres-client/ca.crt)" == 440:0:10001 ]]
+  live_schema="$(docker compose --file "$original_target/compose.yml" --project-name identity-production \
+    run --rm --no-deps --no-TTY postgres-admin \
+    'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' \
     --no-psqlrc --tuples-only --no-align --command 'SELECT version_num FROM identity.alembic_version;')"
 else
   live_schema="${PLATFORM_IDENTITY_FIXTURE_SCHEMA:?fixture schema required}"

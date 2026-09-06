@@ -16,14 +16,23 @@ readonly backup_type="${SSM_backupType:-diff}"
 readonly compose_file=/opt/platform/identity/current/compose.yml
 readonly metadata_root=/var/lib/platform/identity-recovery
 readonly temporary="$(mktemp -d /var/lib/platform/identity-backup.XXXXXXXX)"
+readonly -a compose=(docker compose --file "$compose_file" --project-name identity-production)
 [[ "$backup_type" == full || "$backup_type" == diff ]]
 chmod 0700 "$temporary"
 trap 'rm -rf -- "$temporary"' EXIT
 install -d -m 0700 "$metadata_root"
 /usr/local/libexec/platform/identity-verify-release
+for client_input in \
+  /etc/platform/identity/secrets/database/bootstrap.pgpass \
+  /etc/platform/identity/tls/postgres-client/ca.crt; do
+  [[ -f "$client_input" && ! -L "$client_input" ]]
+done
+[[ "$(stat -c '%a:%u:%g' /etc/platform/identity/secrets/database/bootstrap.pgpass)" == 600:10001:10001 ]]
+[[ "$(stat -c '%a:%u:%g' /etc/platform/identity/tls/postgres-client/ca.crt)" == 440:0:10001 ]]
 
-docker compose --file "$compose_file" --project-name identity-production exec --no-TTY postgres \
-  psql --username identity_bootstrap --dbname identity --no-psqlrc --set ON_ERROR_STOP=1 \
+"${compose[@]}" run --rm --no-deps --no-TTY postgres-admin \
+  'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' \
+  --no-psqlrc --set ON_ERROR_STOP=1 \
   --set marker="$marker" --set marker_created_at="$marker_created_at" <<'SQL'
 CREATE SCHEMA IF NOT EXISTS platform_recovery AUTHORIZATION identity_bootstrap;
 REVOKE ALL ON SCHEMA platform_recovery FROM PUBLIC, identity_service_owner, identity_service_migrator, identity_service_app;
@@ -37,12 +46,9 @@ INSERT INTO platform_recovery.markers(marker, created_at) VALUES (:'marker', :'m
 CHECKPOINT;
 SQL
 
-docker compose --file "$compose_file" --project-name identity-production \
-  exec --no-TTY pgbackrest pgbackrest --stanza=identity --type="$backup_type" backup
-docker compose --file "$compose_file" --project-name identity-production \
-  exec --no-TTY pgbackrest pgbackrest --stanza=identity check
-docker compose --file "$compose_file" --project-name identity-production \
-  exec --no-TTY pgbackrest pgbackrest --stanza=identity info --output=json >"$temporary/info.json"
+"${compose[@]}" exec --no-TTY pgbackrest pgbackrest --stanza=identity --type="$backup_type" backup
+"${compose[@]}" exec --no-TTY pgbackrest pgbackrest --stanza=identity check
+"${compose[@]}" exec --no-TTY pgbackrest pgbackrest --stanza=identity info --output=json >"$temporary/info.json"
 chmod 0600 "$temporary/info.json"
 
 python3 - "$temporary/info.json" "$temporary/metadata.json" "$marker" "$marker_created_at" "$backup_type" <<'PY'
@@ -96,8 +102,7 @@ for metadata_file in "${expired_metadata[@]}"; do
   [[ "$metadata_file" == "$metadata_root"/identity-backup-*.json ]]
   rm -f -- "$metadata_file"
 done
-docker compose --file "$compose_file" --project-name identity-production \
-  exec --no-TTY pgbackrest touch /var/spool/pgbackrest/.last-backup-success
+"${compose[@]}" exec --no-TTY pgbackrest touch /var/spool/pgbackrest/.last-backup-success
 
 readonly metadata_token="$(curl --fail --silent --show-error --max-time 3 --request PUT \
   --header 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token)"
