@@ -28,7 +28,7 @@ while :; do
     archive_input="$archive_input_root/$wal_name"
     [ -f "$archive_input" ] && [ ! -L "$archive_input" ]
     [ "$(/usr/bin/stat -c '%d:%i' "$archive_input")" = "$(/usr/bin/stat -c '%d:%i' "$wal_file")" ]
-    /usr/bin/pgbackrest --stanza="$stanza" archive-push "$archive_input"
+    /usr/bin/pgbackrest --stanza="$stanza" --no-archive-async archive-push "$archive_input"
     rm -f -- "$wal_file"
     touch /var/spool/pgbackrest/.last-archive-success
   done
