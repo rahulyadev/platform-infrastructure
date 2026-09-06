@@ -9,6 +9,12 @@ file=config/nginx/identity-runtime.conf.tftpl
 [[ "$(grep -Fxc '    server_name identity.${base_domain};' "$file")" == 2 ]]
 [[ "$(grep -Fxc '        proxy_pass http://identity_bff;' "$file")" == 2 ]]
 [[ "$(grep -Fxc '        proxy_pass http://identity_api;' "$file")" == 1 ]]
+[[ "$(grep -Fxc '    ssl_session_cache shared:TLS:10m;' "$file")" == 1 ]]
+[[ "$(grep -Fxc '    ssl_session_timeout 1d;' "$file")" == 1 ]]
+[[ "$(grep -Fxc '    listen 80 default_server;' "$file")" == 1 ]]
+[[ "$(grep -Fxc '    listen [::]:80 default_server;' "$file")" == 1 ]]
+[[ "$(grep -Fxc '    listen 443 ssl default_server;' "$file")" == 1 ]]
+[[ "$(grep -Fxc '    listen [::]:443 ssl default_server;' "$file")" == 1 ]]
 ! grep -Eq 'server_name[[:space:]]+auth[.]|proxy_pass[^;]*auth[.]' "$file"
 grep -Fq 'return 308 https://${base_domain}$request_uri;' "$file"
 [[ "$(grep -Fxc '        return 308 https://identity.${base_domain}$request_uri;' "$file")" == 1 ]]

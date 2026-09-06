@@ -63,6 +63,8 @@ server {
     ssl_certificate /etc/letsencrypt/live/${base_domain}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${base_domain}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:TLS:10m;
+    ssl_session_timeout 1d;
     ssl_session_tickets off;
     include /etc/nginx/platform/security-headers.conf;
     add_header Strict-Transport-Security "max-age=300" always;

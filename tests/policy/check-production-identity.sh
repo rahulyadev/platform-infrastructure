@@ -750,6 +750,18 @@ require_count 1 '^[[:space:]]*location \^~ /auth/ \{' "$nginx" "the apex must ha
 require_count 1 '^[[:space:]]*location \^~ /api/ \{' "$nginx" "the apex must have one BFF API route"
 require_count 2 '^[[:space:]]*server_name identity[.]\$\{base_domain\};' "$nginx" \
   "the dedicated Identity API HTTP and HTTPS virtual hosts must remain exact"
+require_fixed deploy/ssm/deploy-identity.sh 'readonly nginx_configuration="$(rooted /etc/nginx/conf.d/portfolio.conf)"' \
+  "Identity activation must atomically replace the combined portfolio configuration"
+require_fixed deploy/ssm/rollback-identity.sh 'readonly nginx_configuration="$(rooted /etc/nginx/conf.d/portfolio.conf)"' \
+  "Identity rollback must restore the same combined portfolio configuration"
+reject 'nginx/conf[.]d/identity-runtime[.]conf' deploy/ssm/deploy-identity.sh deploy/ssm/rollback-identity.sh \
+  "the combined configuration must not create a duplicate virtual-host file"
+reject 'install -d -m 0755 "\$\(dirname -- "\$target"\)"' deploy/ssm/deploy-identity.sh \
+  "atomic file replacement must not relax the existing target parent mode"
+require_fixed deploy/ssm/deploy-identity.sh 'stop_preactivation_services || status=1' \
+  "failed first activation must remove candidate services before restoring absent state"
+require_fixed deploy/ssm/deploy-identity.sh '[[ "$(stat -c '\''%a:%u:%g'\'' "$resolved")" == 700:0:0 ]]' \
+  "deployment must reject a non-private active generation before activation"
 reject 'server_name[[:space:]]+auth[.]|proxy_pass[^;]*auth[.]' "$nginx" \
   "auth DNS must never terminate at or proxy through Nginx"
 require_fixed "$nginx" 'return 308 https://${base_domain}$request_uri;' \
