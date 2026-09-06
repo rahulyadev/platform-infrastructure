@@ -715,6 +715,14 @@ require_fixed "$deploy" '--entrypoint /opt/platform/pgbackrest-sidecar pgbackres
   "deployment must complete the ephemeral stanza creator before starting the archiver"
 require_fixed "$deploy" 'up --detach --wait pgbackrest' \
   "deployment must wait for the wrapper-backed pgBackRest health check"
+require_fixed "$compose" 'identity_wal_spool:/var/lib/postgresql/18/docker/pg_wal/platform-spool' \
+  "the archiver must expose the shared WAL spool beneath pg1-path without widening its database mount"
+require_fixed "$deploy" 'install -d -m 0700 /var/lib/postgresql/18/docker/pg_wal/platform-spool' \
+  "deployment must create the nested volume mountpoint only after PostgreSQL initialized pg_wal"
+require_fixed config/runtime/pgbackrest-sidecar.sh 'archive_input_root=/var/lib/postgresql/18/docker/pg_wal/platform-spool' \
+  "archive-push must receive the shared-spool path nested beneath pg1-path"
+require_fixed config/runtime/pgbackrest-sidecar.sh "'%d:%i'" \
+  "the sidecar must prove both WAL-spool paths resolve to the same filesystem object"
 reject '^pg1-(host|port)=' "$pgbackrest" "pgBackRest must use only the shared administrative PostgreSQL socket"
 require_count 1 '^[[:space:]]*network_mode:[[:space:]]*host[[:space:]]*$' "$compose" \
   "only the listener-free pgBackRest sidecar may retain host-role credential reachability"

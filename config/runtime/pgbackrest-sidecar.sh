@@ -16,6 +16,7 @@ if [ "$#" -gt 0 ]; then
 fi
 
 stanza="${PGBACKREST_STANZA:-identity}"
+archive_input_root=/var/lib/postgresql/18/docker/pg_wal/platform-spool
 
 while :; do
   found=false
@@ -23,7 +24,11 @@ while :; do
     [ -f "$wal_file" ] || continue
     case "$wal_file" in *.part) continue ;; esac
     found=true
-    /usr/bin/pgbackrest --stanza="$stanza" archive-push "$wal_file"
+    wal_name="${wal_file##*/}"
+    archive_input="$archive_input_root/$wal_name"
+    [ -f "$archive_input" ] && [ ! -L "$archive_input" ]
+    [ "$(/usr/bin/stat -c '%d:%i' "$archive_input")" = "$(/usr/bin/stat -c '%d:%i' "$wal_file")" ]
+    /usr/bin/pgbackrest --stanza="$stanza" archive-push "$archive_input"
     rm -f -- "$wal_file"
     touch /var/spool/pgbackrest/.last-archive-success
   done
