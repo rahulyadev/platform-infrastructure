@@ -262,6 +262,8 @@ case "$1" in
   reload) : ;;
   restart) printf 'active\n' >"$root/service-state"; readlink -f -- "$root/opt/platform/identity/current" >"$root/service-target" ;;
   stop) printf 'inactive\n' >"$root/service-state"; : >"$root/service-target" ;;
+  reset-failed) : >"$root/reset-failed" ;;
+  show) printf '%s\n' "$(<"$root/service-state")" ;;
   *) exit 1 ;;
 esac
 SH
@@ -357,6 +359,7 @@ fi
 [[ ! -e "$root/opt/platform/identity/previous" && ! -L "$root/opt/platform/identity/previous" ]]
 grep -Fxq nginx=old "$root/etc/nginx/conf.d/portfolio.conf"
 [[ "$(<"$root/service-state")" == inactive ]]
+[[ -e "$root/reset-failed" ]]
 [[ "$(stat -c '%a' "$root/etc/platform/identity")" == 700 ]]
 
 for variant in exact unexpected; do

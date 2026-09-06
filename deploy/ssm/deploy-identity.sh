@@ -139,6 +139,8 @@ restore_prior_release() {
     "$health_verify" >/dev/null 2>&1 || status=1
   else
     systemctl stop identity-stack.service >/dev/null 2>&1 || status=1
+    systemctl reset-failed identity-stack.service >/dev/null 2>&1 || status=1
+    [[ "$(systemctl show identity-stack.service --property=ActiveState --value)" == inactive ]] || status=1
   fi
   rm -f -- "$(dirname -- "$current")/.current.identity.$$.next" \
     "$(dirname -- "$previous")/.previous.identity.$$.next" \

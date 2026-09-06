@@ -164,6 +164,8 @@ routes and the separate Identity API virtual host. Activation atomically replace
 instead of loading a second set of default virtual hosts, and preserves the configured generation's
 mode while doing so. A failed first activation also removes every pre-activation candidate service
 and network while retaining the three data volumes.
+When the first candidate unit itself fails, restoration also clears only that failed unit cache and
+proves the prior inactive state so a subsequent transactional configuration is not rejected.
 
 The design objectives are RPO no greater than 24 hours and RTO no greater than 4 hours. They are
 objectives pending live activation and repeated restore evidence, not achieved guarantees.
