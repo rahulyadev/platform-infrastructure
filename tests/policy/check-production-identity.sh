@@ -684,6 +684,10 @@ reject '(:latest|image:[[:space:]]+[^#[:space:]]+:[A-Za-z0-9])' "$compose" \
   "Compose source must not use mutable image tags"
 require_fixed "$compose" 'ports: [127.0.0.1:8081:8080]' "the API must bind only to loopback"
 require_fixed "$compose" 'ports: [127.0.0.1:8082:8081]' "the BFF must bind only to its published loopback port"
+require_fixed deploy/ssm/verify-identity.sh "--header 'Host: identity.rahuly.in' http://127.0.0.1:8081/health/ready" \
+  "the API loopback readiness probe must retain its allowed production host"
+require_fixed deploy/ssm/verify-identity.sh "--header 'Host: rahuly.in' http://127.0.0.1:8082/health/ready" \
+  "the BFF loopback readiness probe must retain its allowed production host"
 reject 'ports:.*(5432|6379)|/var/run/docker.sock|/run/docker.sock' "$compose" \
   "state ports and the Docker socket must not be published or mounted"
 require_fixed config/runtime/identity-launcher.py 'sslmode=verify-full&sslrootcert=/run/tls/postgres/ca.crt' \

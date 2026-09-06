@@ -656,5 +656,7 @@ require('install -d -m 0755 "$(dirname -- "$target")"' not in deploy)
 require(deploy.count("stop_preactivation_services || status=1") == 1)
 require(deploy.count("systemctl reset-failed identity-stack.service") == 1)
 require("validate_generation_directory" in deploy and "700:0:0" in deploy)
+require("--header 'Host: identity.rahuly.in' http://127.0.0.1:8081/health/ready" in verify)
+require("--header 'Host: rahuly.in' http://127.0.0.1:8082/health/ready" in verify)
 
 print("Production Identity executable contract checks passed.")
