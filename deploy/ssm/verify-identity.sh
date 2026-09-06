@@ -22,6 +22,20 @@ readonly instance_id="$(curl --fail --silent --show-error --max-time 3 \
 readonly -a compose=(docker compose --file "$compose_file" --project-name "$project")
 stage=IdentityContainerFailure
 
+run_postgres_admin() {
+  "${compose[@]}" run --rm --no-deps --no-TTY postgres-admin \
+    'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' \
+    --no-psqlrc --set ON_ERROR_STOP=1 "$@"
+}
+
+for client_input in \
+  /etc/platform/identity/secrets/database/bootstrap.pgpass \
+  /etc/platform/identity/tls/postgres-client/ca.crt; do
+  [[ -f "$client_input" && ! -L "$client_input" ]]
+done
+[[ "$(stat -c '%a:%u:%g' /etc/platform/identity/secrets/database/bootstrap.pgpass)" == 600:10001:10001 ]]
+[[ "$(stat -c '%a:%u:%g' /etc/platform/identity/tls/postgres-client/ca.crt)" == 440:0:10001 ]]
+
 publish_metric() {
   local metric="$1"
   local value="$2"
@@ -92,17 +106,15 @@ redis_probe="reference-bff:production:portfolio:identity:verifier:$RANDOM$RANDOM
 ' sh "$redis_probe"
 
 stage=IdentityMigrationFailure
-observed_head="$("${compose[@]}" exec --no-TTY --env PGPASSFILE=/run/secrets/database/bootstrap.pgpass postgres \
-  psql 'host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt' \
-  --no-psqlrc --tuples-only --no-align --command 'SELECT version_num FROM identity.alembic_version;')"
+observed_head="$(run_postgres_admin --tuples-only --no-align \
+  --command 'SELECT version_num FROM identity.alembic_version;')"
 [[ "$observed_head" == 0001_initial_identity_schema ]]
 stage=IdentityBackupStale
 "${compose[@]}" exec --no-TTY pgbackrest sh -eu -c \
   'test -f /var/spool/pgbackrest/.last-backup-success; age=$(($(date +%s)-$(stat -c %Y /var/spool/pgbackrest/.last-backup-success))); test "$age" -le 86400'
 
 stage=IdentityWalArchiveStale
-"${compose[@]}" exec --no-TTY postgres psql --username identity_bootstrap --dbname identity \
-  --no-psqlrc --tuples-only --command 'SELECT pg_switch_wal();' >/dev/null
+run_postgres_admin --tuples-only --command 'SELECT pg_switch_wal();' >/dev/null
 wal_fresh=false
 for _ in {1..30}; do
   if "${compose[@]}" exec --no-TTY pgbackrest sh -eu -c \

@@ -92,7 +92,18 @@ active. Directory checks remove only the declaration's leading octal zero before
 Ownership, group, directory type and non-symlink requirements remain exact. A host-global binary or unit upgrade while Identity is active fails before any active
 write. Secret files are root-owned, single-service-group-readable files selected by one atomic
 generation symlink. PostgreSQL clients require TCP with
-`sslmode=verify-full`. The BFF constructs a process-local public/private CA bundle in tmpfs and
+`sslmode=verify-full`. Bootstrap and administrative SQL run only in profile-gated, short-lived
+clients built from the pinned PostgreSQL image. Both use UID/GID 10001, a read-only root,
+dropped capabilities, no-new-privileges, no restart policy, and only the internal state network.
+The bootstrap client receives exactly the bootstrap pgpass, migrator password, runtime password,
+and public client CA as individual read-only files. Later head, grant-audit, recovery-marker,
+backup, verification, rollback, and isolated-restore clients receive only the pgpass and public
+client CA. The long-lived server never receives the migrator or runtime password files, and no
+administrative client receives PGDATA, the server private key, Docker socket, host networking, or
+a public port. SQL input is provided over standard input so a host-only path is never interpreted
+inside a container. Deployment reports fixed readiness, bootstrap, migration, migration-head,
+grant-audit, recovery-marker, backup, and activation stages separately from restoration status.
+The BFF constructs a process-local public/private CA bundle in tmpfs and
 requires server-authenticated `rediss://` with ACL user `portfolio_bff`, no client certificate,
 and exact key namespace `reference-bff:production:portfolio:identity`.
 
@@ -119,7 +130,8 @@ an isolated restore rehearsal operation. Before each backup, the operation commi
 recovery marker in an access-denied control schema and binds that marker and timestamp to bounded,
 mode-0600 backup metadata. An immediate restore must select the latest successful marker; a
 time-target restore must select an eligible marker at or before the target or fail closed. Each
-rehearsal starts a portless restored PostgreSQL, proves the exact migration head and the marker that
+rehearsal starts restored PostgreSQL on a unique internal-only, unpublished network and uses the
+same hardened ephemeral administrative client over verified TLS. It proves the exact migration head and the marker that
 existed before its selected backup, rejects marker visibility to the application role, and removes
 its container and private directory.
 EBS/DLM remains crash-consistent host recovery only.

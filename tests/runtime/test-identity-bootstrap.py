@@ -1,0 +1,166 @@
+#!/usr/bin/env python3
+import copy
+import json
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+compose = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+
+postgres_image = "postgres@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636"
+connection = "host=postgres port=5432 dbname=identity user=identity_bootstrap sslmode=verify-full sslrootcert=/run/tls/postgres/ca.crt"
+
+def mounts(service):
+    result = {}
+    for volume in service.get("volumes", []):
+        target = volume.get("target")
+        if target in result:
+            raise AssertionError("duplicate client mount")
+        result[target] = (volume.get("source"), volume.get("read_only"), volume.get("type"))
+    return result
+
+def validate(value):
+    services = value["services"]
+    if set(services) != {"postgres", "postgres-admin", "postgres-bootstrap", "pgbackrest", "redis", "migrator", "api", "bff"}:
+        raise AssertionError("service inventory")
+    if value["networks"]["state"].get("internal") is not True:
+        raise AssertionError("state network")
+    server_mounts = mounts(services["postgres"])
+    for forbidden in ("/run/secrets/database/migrator_password", "/run/secrets/database/runtime_password"):
+        if forbidden in server_mounts:
+            raise AssertionError("server credential isolation")
+    expected = {
+        "postgres-admin": {
+            "/run/secrets/database/bootstrap.pgpass",
+            "/run/tls/postgres/ca.crt",
+        },
+        "postgres-bootstrap": {
+            "/run/secrets/database/bootstrap.pgpass",
+            "/run/secrets/database/migrator_password",
+            "/run/secrets/database/runtime_password",
+            "/run/tls/postgres/ca.crt",
+        },
+    }
+    for name, expected_targets in expected.items():
+        service = services[name]
+        if service.get("image") != postgres_image or service.get("platform") != "linux/arm64/v8":
+            raise AssertionError(name + " image")
+        if service.get("user") != "10001:10001" or service.get("read_only") is not True:
+            raise AssertionError(name + " identity")
+        if service.get("restart") != "no" or service.get("cap_drop") != ["ALL"]:
+            raise AssertionError(name + " lifetime")
+        if service.get("security_opt") != ["no-new-privileges:true"]:
+            raise AssertionError(name + " security")
+        if service.get("profiles") != ["administration"] or service.get("networks") != {"state": None}:
+            raise AssertionError(name + " scope")
+        if service.get("entrypoint") != ["psql"]:
+            raise AssertionError(name + " entrypoint")
+        if service.get("environment") != {"PGPASSFILE": "/run/secrets/database/bootstrap.pgpass"}:
+            raise AssertionError(name + " pgpass")
+        observed_mounts = mounts(service)
+        if set(observed_mounts) != expected_targets:
+            raise AssertionError(name + " mounts")
+        if any(read_only is not True or kind != "bind" for _, read_only, kind in observed_mounts.values()):
+            raise AssertionError(name + " mount mode")
+
+validate(compose)
+mutations = []
+for name, operation in (
+    ("bootstrap-missing-runtime", lambda value: value["services"]["postgres-bootstrap"]["volumes"].pop()),
+    ("admin-extra-secret", lambda value: value["services"]["postgres-admin"]["volumes"].append(copy.deepcopy(value["services"]["postgres-bootstrap"]["volumes"][1]))),
+    ("server-secret-leak", lambda value: value["services"]["postgres"]["volumes"].append(copy.deepcopy(value["services"]["postgres-bootstrap"]["volumes"][1]))),
+    ("wrong-uid", lambda value: value["services"]["postgres-admin"].__setitem__("user", "0:0")),
+    ("writable-root", lambda value: value["services"]["postgres-admin"].__setitem__("read_only", False)),
+    ("capability", lambda value: value["services"]["postgres-admin"].__setitem__("cap_drop", [])),
+    ("restart", lambda value: value["services"]["postgres-admin"].__setitem__("restart", "always")),
+    ("public-network", lambda value: value["networks"]["state"].__setitem__("internal", False)),
+):
+    candidate = copy.deepcopy(compose)
+    operation(candidate)
+    try:
+        validate(candidate)
+    except AssertionError:
+        mutations.append(name)
+    else:
+        raise SystemExit("Identity PostgreSQL client mutation was accepted: " + name)
+if len(mutations) != 8:
+    raise SystemExit("Identity PostgreSQL client mutation count drifted.")
+
+scripts = {
+    name: (root / "deploy/ssm" / name).read_text(encoding="utf-8")
+    for name in (
+        "deploy-identity.sh", "backup-identity.sh", "verify-identity.sh",
+        "rollback-identity.sh", "restore-identity.sh",
+    )
+}
+
+def validate_scripts(value):
+    deploy = value["deploy-identity.sh"]
+    if deploy.count("run_postgres_client postgres-bootstrap") != 1:
+        raise AssertionError("bootstrap client call")
+    if deploy.count("run_postgres_client postgres-admin") != 3:
+        raise AssertionError("deployment admin calls")
+    expected_inputs = (
+        'require_postgres_client_input "$generation/secrets/database/bootstrap.pgpass" 600:10001:10001',
+        'require_postgres_client_input "$generation/secrets/database/migrator_password" 440:0:10001',
+        'require_postgres_client_input "$generation/secrets/database/runtime_password" 440:0:10001',
+        'require_postgres_client_input "$generation/tls/postgres-client/ca.crt" 440:0:10001',
+    )
+    if any(deploy.count(item) != 1 for item in expected_inputs):
+        raise AssertionError("input metadata")
+    if deploy.count('[[ -f "$path" && ! -L "$path" ]]') != 1:
+        raise AssertionError("input type")
+    if deploy.index("\nvalidate_postgres_client_inputs\n") > deploy.index("deployment_stage=image_validation"):
+        raise AssertionError("input validation order")
+    bootstrap = 'run_postgres_client postgres-bootstrap < "$generation/postgres-roles.sql"'
+    audit = 'run_postgres_client postgres-admin --set IDENTITY_POST_MIGRATION_AUDIT=1 < "$generation/postgres-roles.sql"'
+    if deploy.count(bootstrap) != 1 or deploy.count(audit) != 1:
+        raise AssertionError("SQL stdin")
+    if "run --rm --no-deps --no-TTY \"$service\"" not in deploy:
+        raise AssertionError("ephemeral lifetime")
+    for stage in ("client_input_validation", "database_readiness", "database_bootstrap", "migration", "migration_head", "grant_audit", "recovery_marker", "activation"):
+        if len(re.findall(r"^deployment_stage=" + re.escape(stage) + r"$", deploy, re.M)) != 1:
+            raise AssertionError("deployment stage: " + stage)
+    for name in ("deploy-identity.sh", "backup-identity.sh", "verify-identity.sh", "rollback-identity.sh"):
+        if re.search(r"compose[^\n]*exec[^\n]*postgres(?:[^\n]*\n){0,2}[^\n]*psql", value[name]):
+            raise AssertionError("in-server SQL client: " + name)
+    if value["restore-identity.sh"].count("run_restore_psql") < 4:
+        raise AssertionError("restore client calls")
+    if connection not in deploy or connection not in value["restore-identity.sh"]:
+        raise AssertionError("verify-full connection")
+    if "--network none" in value["restore-identity.sh"] and "identity-restore" in value["restore-identity.sh"]:
+        raise AssertionError("restore network")
+    if re.search(r"--file\s+\"?\$generation/postgres-roles[.]sql", deploy):
+        raise AssertionError("unmounted host SQL path")
+
+validate_scripts(scripts)
+script_mutations = []
+for name, old, new in (
+    ("symlink-input", '[[ -f "$path" && ! -L "$path" ]]', '[[ -f "$path" ]]'),
+    ("pgpass-mode", "600:10001:10001", "440:0:10001"),
+    ("unreadable-secret-mode", 'require_postgres_client_input "$generation/secrets/database/migrator_password" 440:0:10001', 'require_postgres_client_input "$generation/secrets/database/migrator_password" 400:0:10001'),
+    ("wrong-hostname", "host=postgres port=5432", "host=not-postgres port=5432"),
+    ("tls-downgrade", "sslmode=verify-full", "sslmode=require"),
+    ("wrong-ca", "sslrootcert=/run/tls/postgres/ca.crt", "sslrootcert=/tmp/ca.crt"),
+    ("missing-stdin", 'run_postgres_client postgres-bootstrap < "$generation/postgres-roles.sql"', "run_postgres_client postgres-bootstrap"),
+    ("persistent-client", 'run --rm --no-deps --no-TTY "$service"', 'run --no-deps --no-TTY "$service"'),
+):
+    candidate = dict(scripts)
+    target = "deploy-identity.sh"
+    if old not in candidate[target]:
+        raise SystemExit("Identity script mutation source drifted: " + name)
+    candidate[target] = candidate[target].replace(old, new, 1)
+    try:
+        validate_scripts(candidate)
+    except AssertionError:
+        script_mutations.append(name)
+    else:
+        raise SystemExit("Identity client script mutation was accepted: " + name)
+if len(script_mutations) != 8:
+    raise SystemExit("Identity client script mutation count drifted.")
+
+print("Identity PostgreSQL clients use exact split mounts, UID 10001, verify-full TLS, and an internal network.")
+print("Identity PostgreSQL server retains narrow credentials; eight independent client mutations were rejected.")
+print("Identity metadata, UID, TLS hostname/CA, SQL stdin, and ephemeral-lifetime mutations were rejected.")
+print("Identity bootstrap, migration-head, grant-audit, marker, backup, verify, rollback, and restore callers are coherent.")

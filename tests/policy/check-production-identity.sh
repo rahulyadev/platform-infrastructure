@@ -705,15 +705,23 @@ require_fixed "$pgbackrest" 'repo1-cipher-type=aes-256-cbc' "pgBackRest reposito
 reject '^pg1-(host|port)=' "$pgbackrest" "pgBackRest must use only the shared administrative PostgreSQL socket"
 require_count 1 '^[[:space:]]*network_mode:[[:space:]]*host[[:space:]]*$' "$compose" \
   "only the listener-free pgBackRest sidecar may retain host-role credential reachability"
-require_count 6 '^[[:space:]]*driver:[[:space:]]*awslogs[[:space:]]*$' "$compose" \
+require_count 7 '^[[:space:]]*driver:[[:space:]]*awslogs[[:space:]]*$' "$compose" \
   "every Identity workload and state service must use the host-role CloudWatch Logs driver"
 require_fixed "$production_document" 'Redis loss' "Redis loss must remain documented as session-invalidating"
 require_fixed "$production_document" 'no recovery claim is made' "Redis must retain an explicit no-recovery statement"
 require_fixed "$production_document" 'PLATFORM-P4-REDIS-RECOVERY-DESIGN-001' "Redis recovery must remain an explicit future design task"
-require_count 5 '^[[:space:]]*read_only:[[:space:]]*true' "$compose" \
+require_count 6 '^[[:space:]]*read_only:[[:space:]]*true' "$compose" \
   "hardened containers must retain read-only roots"
-require_count 5 '^[[:space:]]*cap_drop:[[:space:]]*\[ALL\]' "$compose" \
+require_count 6 '^[[:space:]]*cap_drop:[[:space:]]*\[ALL\]' "$compose" \
   "every explicit container hardening boundary must drop capabilities"
+require_count 1 '^x-postgres-client:[[:space:]]*&postgres-client$' "$compose" \
+  "the hardened PostgreSQL client contract must have one shared anchor"
+require_count 1 '^[[:space:]]{2}postgres-admin:$' "$compose" \
+  "the narrow administrative PostgreSQL client must remain declared once"
+require_count 1 '^[[:space:]]{2}postgres-bootstrap:$' "$compose" \
+  "the bootstrap PostgreSQL client must remain declared once"
+require_count 1 '^[[:space:]]*profiles:[[:space:]]*\[administration\]' "$compose" \
+  "ephemeral PostgreSQL clients must stay outside the default service profile"
 
 require_count 1 '^[[:space:]]*location \^~ /auth/ \{' "$nginx" "the apex must have one BFF auth route"
 require_count 1 '^[[:space:]]*location \^~ /api/ \{' "$nginx" "the apex must have one BFF API route"

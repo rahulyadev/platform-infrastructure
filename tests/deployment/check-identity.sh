@@ -52,6 +52,12 @@ grep -Fq 'stop_preactivation_services' deploy/ssm/deploy-identity.sh
 grep -Fq 'user: "999:999"' config/runtime/identity-compose.yml.tftpl
 grep -Fq 'database-server/bootstrap_password:/run/secrets/database/bootstrap_password:ro' config/runtime/identity-compose.yml.tftpl
 grep -Fq 'database/bootstrap.pgpass:/run/secrets/database/bootstrap.pgpass:ro' config/runtime/identity-compose.yml.tftpl
+grep -Fq 'postgres-admin:' config/runtime/identity-compose.yml.tftpl
+grep -Fq 'postgres-bootstrap:' config/runtime/identity-compose.yml.tftpl
+grep -Fq 'profiles: [administration]' config/runtime/identity-compose.yml.tftpl
+grep -Fq 'run_postgres_client postgres-bootstrap' deploy/ssm/deploy-identity.sh
+grep -Fq 'run_postgres_client postgres-admin' deploy/ssm/deploy-identity.sh
+! grep -Eq 'exec --no-TTY.*postgres[[:space:]]+psql' deploy/ssm/{deploy,backup,verify,rollback}-identity.sh
 ! grep -Fq '/secrets/database:/run/secrets/database:ro' config/runtime/identity-compose.yml.tftpl
 ! grep -Eq -- '--privileged|--cap-add ALL' deploy/ssm/deploy-identity.sh
 [[ "$(grep -Fc 'run --rm migrator' deploy/ssm/deploy-identity.sh)" == 1 ]]

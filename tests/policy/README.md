@@ -193,6 +193,9 @@ identity, least IAM and non-Google host secrets, digest-pinned ARM64 support
 images, private hardened state services, exact same-origin Nginx routes, fixed
 SSM/migration/backup/restore operations, and preservation of the existing eight
 alarms. Failures are contract-oriented and never reproduce matching values.
+The runtime count guards include the shared hardened, administration-profile
+PostgreSQL client anchor used by the two short-lived bootstrap/admin services;
+focused runtime checks separately prove their exact split mounts and UID.
 
 Identity delivery trust uses GitHub's current ID-bearing repository prefix:
 `repo:${var.github_owner}@${var.github_owner_id}/${var.github_repository}@${var.github_repository_id}:environment:${var.github_environment}`.
