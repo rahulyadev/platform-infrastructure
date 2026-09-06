@@ -128,7 +128,9 @@ role, membership-option, third-party-edge, ownership, or grant drift; it removes
 database/schema privileges and then audits the exact current-head table, sequence, and column
 privilege inventory after the published migration. The runtime role owns nothing, belongs to no
 role, and receives no destructive, DDL, ownership, or role-escalation permission. Migrations
-must reach exact head `0001_initial_identity_schema` before activation. Redis is BFF-only session and
+must reach exact head `0001_initial_identity_schema` before activation. The one-shot migrator is in
+an explicit migration profile: deployment runs it directly, while the long-running systemd Compose
+start cannot rerun it or fail `--wait` merely because that successful one-shot exited. Redis is BFF-only session and
 OAuth-transaction state, uses TTL-compatible eviction, and has persistence disabled. Redis loss
 invalidates sessions and requires reauthentication; no recovery claim is made. Recovery design is
 deferred to future task `PLATFORM-P4-REDIS-RECOVERY-DESIGN-001`.
