@@ -79,6 +79,8 @@ def validate(value):
         "CMD", "/opt/platform/pgbackrest-sidecar", "--stanza=identity", "check"
     ]:
         raise AssertionError("pgbackrest wrapped health check")
+    if services["migrator"].get("profiles") != ["migration"] or services["migrator"].get("restart") != "no":
+        raise AssertionError("one-shot migrator profile")
 
 validate(compose)
 mutations = []
@@ -94,6 +96,7 @@ for name, operation in (
     ("pgbackrest-default-config", lambda value: value["services"]["pgbackrest"].__setitem__("environment", {})),
     ("pgbackrest-direct-health", lambda value: value["services"]["pgbackrest"]["healthcheck"].__setitem__("test", ["CMD", "pgbackrest", "--stanza=identity", "check"])),
     ("pgbackrest-missing-nested-spool", lambda value: value["services"]["pgbackrest"].__setitem__("volumes", [item for item in value["services"]["pgbackrest"]["volumes"] if item.get("target") != "/var/lib/postgresql/18/docker/pg_wal/platform-spool"])),
+    ("migrator-default-profile", lambda value: value["services"]["migrator"].pop("profiles")),
 ):
     candidate = copy.deepcopy(compose)
     operation(candidate)
@@ -103,7 +106,7 @@ for name, operation in (
         mutations.append(name)
     else:
         raise SystemExit("Identity PostgreSQL client mutation was accepted: " + name)
-if len(mutations) != 11:
+if len(mutations) != 12:
     raise SystemExit("Identity PostgreSQL client mutation count drifted.")
 
 scripts = {
@@ -224,6 +227,6 @@ if len(script_mutations) != 12:
     raise SystemExit("Identity client script mutation count drifted.")
 
 print("Identity PostgreSQL clients use exact split mounts, UID 10001, verify-full TLS, and an internal network.")
-print("Identity PostgreSQL server retains narrow credentials; eleven independent client/backup mutations were rejected.")
+print("Identity PostgreSQL server retains narrow credentials; twelve independent client/backup/migration mutations were rejected.")
 print("Identity metadata, UID, TLS hostname/CA, SQL stdin, and ephemeral-lifetime mutations were rejected.")
 print("Identity bootstrap, migration-head, grant-audit, marker, backup, verify, rollback, and restore callers are coherent.")

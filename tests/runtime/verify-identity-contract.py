@@ -633,6 +633,7 @@ for excluded in ('aws_ssm_document.identity["configure"].arn', 'aws_ssm_document
 require("length(var.runtime_secret_arns) == 4" in module_variables)
 require("identity_bff_runtime_secret_arn" not in runtime_variables)
 require('var.identity_redis_namespace == "reference-bff:production:portfolio:identity"' in runtime_variables)
+require(compose.count("profiles: [migration]") == 1)
 
 require("for_each = var.enable_runtime ? local.identity_alarms : {}" in monitoring)
 require("alarm_actions       = [var.alarm_topic_arn]" in monitoring)

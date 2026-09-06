@@ -23,7 +23,7 @@ IDENTITY_BFF_IMAGE=registry.example/identity-bff@sha256:bbbbbbbbbbbbbbbbbbbbbbbb
 COGNITO_ISSUER=https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_Example123 \
 COGNITO_JWKS_URL=https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_Example123/.well-known/jwks.json \
 COGNITO_CLIENT_ID=aaaaaaaaaaaaaaaaaaaaaaaaaa \
-docker compose --file "$temporary/compose.yml" --profile administration config --format json >"$temporary/compose.json"
+docker compose --file "$temporary/compose.yml" --profile administration --profile migration config --format json >"$temporary/compose.json"
 
 python3 tests/runtime/test-identity-bootstrap.py "$repository_root" "$temporary/compose.json"
 printf 'Production Identity hardened PostgreSQL client contract passed.\n'

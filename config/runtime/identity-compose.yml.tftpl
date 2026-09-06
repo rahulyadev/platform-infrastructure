@@ -204,6 +204,7 @@ services:
     image: $${IDENTITY_API_IMAGE:?immutable Identity API image required}
     platform: linux/arm64
     restart: "no"
+    profiles: [migration]
     read_only: true
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]

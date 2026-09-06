@@ -745,6 +745,8 @@ require_count 1 '^[[:space:]]{2}postgres-bootstrap:$' "$compose" \
   "the bootstrap PostgreSQL client must remain declared once"
 require_count 1 '^[[:space:]]*profiles:[[:space:]]*\[administration\]' "$compose" \
   "ephemeral PostgreSQL clients must stay outside the default service profile"
+require_count 1 '^[[:space:]]*profiles:[[:space:]]*\[migration\]' "$compose" \
+  "the successful one-shot migrator must stay outside the long-running service profile"
 
 require_count 1 '^[[:space:]]*location \^~ /auth/ \{' "$nginx" "the apex must have one BFF auth route"
 require_count 1 '^[[:space:]]*location \^~ /api/ \{' "$nginx" "the apex must have one BFF API route"
