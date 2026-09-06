@@ -723,6 +723,8 @@ require_fixed config/runtime/pgbackrest-sidecar.sh 'archive_input_root=/var/lib/
   "archive-push must receive the shared-spool path nested beneath pg1-path"
 require_fixed config/runtime/pgbackrest-sidecar.sh "'%d:%i'" \
   "the sidecar must prove both WAL-spool paths resolve to the same filesystem object"
+require_fixed config/runtime/pgbackrest-sidecar.sh '--no-archive-async archive-push "$archive_input"' \
+  "the external WAL queue must await each upload before removing its source"
 reject '^pg1-(host|port)=' "$pgbackrest" "pgBackRest must use only the shared administrative PostgreSQL socket"
 require_count 1 '^[[:space:]]*network_mode:[[:space:]]*host[[:space:]]*$' "$compose" \
   "only the listener-free pgBackRest sidecar may retain host-role credential reachability"

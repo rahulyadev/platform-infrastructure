@@ -49,6 +49,8 @@ Deployment creates the stanza in a completed ephemeral wrapper invocation before
 archiver, then waits on the wrapper-backed health check; startup never races a second stanza creator.
 The shared WAL-spool volume is mounted a second time beneath `pg_wal` in the archiver namespace only;
 the sidecar proves both paths are the same inode before passing the nested path required by pgBackRest.
+Because this sidecar is already the durable asynchronous queue, it performs each pgBackRest upload
+synchronously and removes the queued WAL only after that upload succeeds.
 
 Secret values are never committed. The four host-readable secret schemas are names only:
 

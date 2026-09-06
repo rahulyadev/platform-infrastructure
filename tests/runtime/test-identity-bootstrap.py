@@ -175,6 +175,8 @@ def validate_scripts(value):
         raise AssertionError("pgbackrest nested archive source")
     if "'%d:%i'" not in pgbackrest_sidecar:
         raise AssertionError("pgbackrest archive inode proof")
+    if '--no-archive-async archive-push "$archive_input"' not in pgbackrest_sidecar:
+        raise AssertionError("pgbackrest synchronous queue drain")
     if "repo1-cipher-pass-command" in (root / "config/runtime/pgbackrest.conf.tftpl").read_text(encoding="utf-8"):
         raise AssertionError("unsupported pgbackrest cipher command")
 
