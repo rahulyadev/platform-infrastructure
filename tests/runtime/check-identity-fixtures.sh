@@ -30,7 +30,7 @@ if [[ -n "${IDENTITY_TASK003_PACKED_RESULT_OBJECT:-}" ]]; then
     # This value binds the changed source bytes above to the fresh, isolated
     # ARM64 production-Compose bootstrap/migration receipt. The old packed
     # application proof cannot stand in for an affected execution path.
-    [[ "${IDENTITY_TASK010_ARM64_PROOF_OBJECT:-}" == 0cbe7df38cd3b82f2e0458ea41f97f08c4b77bfacf3da7fe05bd9d06a7539ee1 ]]
+    [[ "${IDENTITY_TASK010_ARM64_PROOF_OBJECT:-}" == a924615ad07b6f88ddd4dab3555f07cd1c9c7e6adf378b70b926a0e393bb59d0 ]]
   fi
   unchanged_packed_inputs=(config/runtime/identity-images.json)
   git diff --quiet c9e25c0e028f35f7d27297e1e0bdd90f77c2c107 -- "${unchanged_packed_inputs[@]}"

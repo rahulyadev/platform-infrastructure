@@ -709,6 +709,12 @@ require_fixed config/runtime/pgbackrest-sidecar.sh 'PGBACKREST_REPO1_CIPHER_PASS
   "the fixed pgBackRest wrapper must inject its file-backed cipher only into the child process"
 require_fixed config/runtime/pgbackrest-sidecar.sh "440:0:65532" \
   "the fixed pgBackRest wrapper must validate exact cipher-file metadata"
+require_fixed "$compose" 'test: [CMD, /opt/platform/pgbackrest-sidecar, --stanza=identity, check]' \
+  "the pgBackRest health check must use the file-backed cipher wrapper"
+require_fixed "$deploy" '--entrypoint /opt/platform/pgbackrest-sidecar pgbackrest --stanza=identity stanza-create' \
+  "deployment must complete the ephemeral stanza creator before starting the archiver"
+require_fixed "$deploy" 'up --detach --wait pgbackrest' \
+  "deployment must wait for the wrapper-backed pgBackRest health check"
 reject '^pg1-(host|port)=' "$pgbackrest" "pgBackRest must use only the shared administrative PostgreSQL socket"
 require_count 1 '^[[:space:]]*network_mode:[[:space:]]*host[[:space:]]*$' "$compose" \
   "only the listener-free pgBackRest sidecar may retain host-role credential reachability"

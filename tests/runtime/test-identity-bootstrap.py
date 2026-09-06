@@ -71,6 +71,10 @@ def validate(value):
         "/etc/platform/identity/pgbackrest.conf", True, "bind"
     ) or "/etc/pgbackrest/pgbackrest.conf" in pgbackrest_mounts:
         raise AssertionError("pgbackrest traversable config mount")
+    if pgbackrest.get("healthcheck", {}).get("test") != [
+        "CMD", "/opt/platform/pgbackrest-sidecar", "--stanza=identity", "check"
+    ]:
+        raise AssertionError("pgbackrest wrapped health check")
 
 validate(compose)
 mutations = []
@@ -84,6 +88,7 @@ for name, operation in (
     ("restart", lambda value: value["services"]["postgres-admin"].__setitem__("restart", "always")),
     ("public-network", lambda value: value["networks"]["state"].__setitem__("internal", False)),
     ("pgbackrest-default-config", lambda value: value["services"]["pgbackrest"].__setitem__("environment", {})),
+    ("pgbackrest-direct-health", lambda value: value["services"]["pgbackrest"]["healthcheck"].__setitem__("test", ["CMD", "pgbackrest", "--stanza=identity", "check"])),
 ):
     candidate = copy.deepcopy(compose)
     operation(candidate)
@@ -93,7 +98,7 @@ for name, operation in (
         mutations.append(name)
     else:
         raise SystemExit("Identity PostgreSQL client mutation was accepted: " + name)
-if len(mutations) != 9:
+if len(mutations) != 10:
     raise SystemExit("Identity PostgreSQL client mutation count drifted.")
 
 scripts = {
@@ -146,6 +151,14 @@ def validate_scripts(value):
     wrapper = "/opt/platform/pgbackrest-sidecar"
     if deploy.count(wrapper) != 4 or value["backup-identity.sh"].count(wrapper) != 3:
         raise AssertionError("pgbackrest wrapper callers")
+    stanza_create = "--entrypoint " + wrapper + " pgbackrest --stanza=identity stanza-create"
+    archiver_start = "up --detach --wait pgbackrest"
+    if deploy.count(stanza_create) != 1 or deploy.count(archiver_start) != 1:
+        raise AssertionError("pgbackrest serialized readiness")
+    if deploy.index(stanza_create) > deploy.index(archiver_start):
+        raise AssertionError("pgbackrest stanza/start order")
+    if re.search(r"exec[^\n]*pgbackrest(?:[^\n]*\n){0,1}[^\n]*stanza-create", deploy):
+        raise AssertionError("pgbackrest competing stanza creator")
     if value["restore-identity.sh"].count("--entrypoint " + wrapper) != 1:
         raise AssertionError("pgbackrest restore wrapper")
     if "PGBACKREST_REPO1_CIPHER_PASS" not in pgbackrest_sidecar or "440:0:65532" not in pgbackrest_sidecar:
@@ -180,6 +193,6 @@ if len(script_mutations) != 8:
     raise SystemExit("Identity client script mutation count drifted.")
 
 print("Identity PostgreSQL clients use exact split mounts, UID 10001, verify-full TLS, and an internal network.")
-print("Identity PostgreSQL server retains narrow credentials; nine independent client/backup mutations were rejected.")
+print("Identity PostgreSQL server retains narrow credentials; ten independent client/backup mutations were rejected.")
 print("Identity metadata, UID, TLS hostname/CA, SQL stdin, and ephemeral-lifetime mutations were rejected.")
 print("Identity bootstrap, migration-head, grant-audit, marker, backup, verify, rollback, and restore callers are coherent.")

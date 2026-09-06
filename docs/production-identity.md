@@ -45,6 +45,8 @@ The checked-in configuration never embeds the repository cipher and does not rel
 `root:65532` secret bind and supplies the cipher only in the invoked pgBackRest process environment;
 Docker's static configuration, command arguments, logs, and repository metadata remain value-free.
 The S3 repository also declares the exact regional AWS endpoint required by the pinned pgBackRest build.
+Deployment creates the stanza in a completed ephemeral wrapper invocation before starting the long-lived
+archiver, then waits on the wrapper-backed health check; startup never races a second stanza creator.
 
 Secret values are never committed. The four host-readable secret schemas are names only:
 

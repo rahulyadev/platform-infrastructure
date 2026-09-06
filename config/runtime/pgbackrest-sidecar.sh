@@ -16,7 +16,6 @@ if [ "$#" -gt 0 ]; then
 fi
 
 stanza="${PGBACKREST_STANZA:-identity}"
-/usr/bin/pgbackrest --stanza="$stanza" stanza-create
 
 while :; do
   found=false
